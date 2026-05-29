@@ -86,7 +86,6 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_authenticated(user_id, True)
         await update.message.reply_text(
             "✅ *Access granted!* Welcome aboard.\n\n"
-            "✅ *Access granted!* Welcome aboard.\n\n"
             "Just send me any financial transaction in plain language — "
             "English or Hindi, I understand both!",
             parse_mode="Markdown",
