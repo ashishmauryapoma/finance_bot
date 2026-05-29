@@ -1,118 +1,266 @@
 """
-Groq AI handler — converts natural language to structured transaction JSON
-Supports English + Hindi (Hinglish) financial messages
+Groq handler — extract structured transaction data from natural language.
+Groq picks the closest matching category from a fixed list.
 """
 
 import os
 import json
 import logging
-from groq import Groq
+from groq import AsyncGroq
 from dotenv import load_dotenv
 
 load_dotenv()
-
 logger = logging.getLogger(__name__)
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+# ─────────────────────────────────────────────────────────────────────────────
+# Category lists — edit these to customise your categories
+# ─────────────────────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a financial transaction parser. Your ONLY job is to extract structured transaction data from natural language messages — including English, Hindi, and Hinglish (Hindi-English mix).
+EXPENSE_CATEGORIES = [
+    "Rent",
+    "Home Loan / Mortgage",
+    "Electricity Bill",
+    "Water Bill",
+    "Gas Cylinder / Gas Bill",
+    "Internet / Wi-Fi",
+    "Mobile Recharge",
+    "Groceries",
+    "Vegetables & Fruits",
+    "Milk & Dairy",
+    "Eating Out / Restaurants",
+    "Fast Food",
+    "Tea / Coffee",
+    "Snacks",
+    "Fuel / Petrol",
+    "Public Transport",
+    "Cab / Taxi",
+    "Vehicle Maintenance",
+    "Car Insurance",
+    "Bike Insurance",
+    "Medical Bills",
+    "Medicines",
+    "Health Insurance",
+    "Gym Membership",
+    "Sports Expenses",
+    "School Fees",
+    "College Fees",
+    "Online Courses",
+    "Books & Stationery",
+    "Clothing",
+    "Shoes & Footwear",
+    "Personal Care",
+    "Haircut / Salon",
+    "Cosmetics",
+    "Entertainment",
+    "OTT Subscriptions",
+    "Movie Tickets",
+    "Gaming",
+    "Travel",
+    "Hotel Stay",
+    "Gifts",
+    "Donations / Charity",
+    "Festivals & Celebrations",
+    "EMI Payments",
+    "Credit Card Bill",
+    "Taxes",
+    "Household Items",
+    "Furniture",
+    "Electronics Repair",
+    "Other",
+]
 
-You MUST respond with ONLY a valid JSON object — no explanation, no extra text, no markdown.
+INCOME_CATEGORIES = [
+    "Salary",
+    "Freelancing",
+    "Business Income",
+    "Side Hustle",
+    "Bonus",
+    "Overtime Pay",
+    "Commission",
+    "Incentives",
+    "Tips",
+    "Rental Income",
+    "Interest from Bank",
+    "Fixed Deposit Interest",
+    "Dividends",
+    "Stock Market Profit",
+    "Mutual Fund Returns",
+    "Cryptocurrency Profit",
+    "Pension",
+    "Scholarship",
+    "Stipend",
+    "Cashback Rewards",
+    "Refunds",
+    "Gift Received",
+    "Pocket Money",
+    "Allowance",
+    "Royalties",
+    "Affiliate Marketing",
+    "YouTube Revenue",
+    "Blogging Income",
+    "Ad Revenue",
+    "Online Course Sales",
+    "E-book Sales",
+    "Consulting Income",
+    "Coaching / Tuition",
+    "Farming Income",
+    "Livestock Sales",
+    "Reselling Profit",
+    "Cashback from Credit Card",
+    "Lottery Winnings",
+    "Insurance Claim",
+    "Government Benefits",
+    "Tax Refund",
+    "Crowdfunding Received",
+    "Sponsorship Income",
+    "Event Earnings",
+    "Photography Income",
+    "App Revenue",
+    "Software Sales",
+    "Donation Received",
+    "Profit Sharing",
+]
 
-JSON format:
-{
-  "type": "expense" | "income",
-  "amount": <number>,
-  "category": "<category string>",
-  "note": "<short description>"
-}
+# ─────────────────────────────────────────────────────────────────────────────
+# Prompt builder
+# ─────────────────────────────────────────────────────────────────────────────
 
-Categories to use (pick the closest match):
-- Food & Dining
-- Fuel
-- Groceries
-- Transport
-- Utilities
-- Rent
-- Healthcare
-- Entertainment
-- Shopping
-- Education
-- Salary
-- Freelance
-- Business Income
-- Investment
-- Other
+_EXPENSE_LIST = "\n".join(f"  - {c}" for c in EXPENSE_CATEGORIES)
+_INCOME_LIST  = "\n".join(f"  - {c}" for c in INCOME_CATEGORIES)
+
+SYSTEM_PROMPT = f"""You are a financial transaction parser. The user will send a message in English or Hindi (or a mix) describing a financial transaction.
+
+Your job:
+1. Determine if it is an "expense" or "income".
+2. Extract the amount (numeric only, no currency symbols).
+3. Pick the SINGLE best matching category from the relevant list below.
+4. Write a short clean note summarising the transaction.
+
+EXPENSE categories (use one of these exactly if type is expense):
+{_EXPENSE_LIST}
+
+INCOME categories (use one of these exactly if type is income):
+{_INCOME_LIST}
 
 Rules:
-1. "type" must be "expense" for spending/payments, "income" for receiving money.
-2. "amount" must be a plain number (no currency symbol).
-3. "category" must be one of the listed categories above.
-4. "note" should be a short English summary (max 10 words).
-5. If the message is NOT a financial transaction at all, respond with: {"error": "not_a_transaction"}
-6. Handle Hindi numbers: ek=1, do=2, teen=3, char=4, paanch=5, das=10, bees=20, pachaas=50, sau=100, hazaar=1000, lakh=100000
+- Always pick the CLOSEST matching category from the list. Never invent a new category.
+- If nothing fits even loosely, use "Other" for expense or "Business Income" for income.
+- Amount must be a plain number (e.g. 500, 1200.50). No commas, no symbols.
+- If no amount is mentioned, return null for amount.
+- Note should be concise (max 10 words), in English.
+- If the message is not a financial transaction at all, return null.
 
-Examples:
-Input: "Spent 500 on petrol" → {"type":"expense","amount":500,"category":"Fuel","note":"Petrol"}
-Input: "Received 50000 salary" → {"type":"income","amount":50000,"category":"Salary","note":"Monthly salary"}
-Input: "1200 rupay grocery mein gaye" → {"type":"expense","amount":1200,"category":"Groceries","note":"Grocery shopping"}
-Input: "Paanch sau ka khana" → {"type":"expense","amount":500,"category":"Food & Dining","note":"Food expense"}
-Input: "Teen hazaar freelance mila" → {"type":"income","amount":3000,"category":"Freelance","note":"Freelance income"}
-Input: "Paid 800 electricity bill" → {"type":"expense","amount":800,"category":"Utilities","note":"Electricity bill"}
-Input: "Hello how are you" → {"error":"not_a_transaction"}
+Respond ONLY with a valid JSON object in this exact format (no markdown, no explanation):
+{{"type": "expense" or "income", "category": "<exact category name>", "amount": <number or null>, "note": "<short note>"}}
 """
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Groq client
+# ─────────────────────────────────────────────────────────────────────────────
 
-async def extract_transaction(message: str) -> dict | None:
+_client: AsyncGroq | None = None
+
+def _get_client() -> AsyncGroq:
+    global _client
+    if _client is None:
+        token = os.getenv("GROQ_API_KEY")
+        if not token:
+            raise ValueError("GROQ_API_KEY not set.")
+        _client = AsyncGroq(api_key=token)
+    return _client
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Category validator — ensure Groq's response matches your list exactly
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _validate_category(txn_type: str, category: str) -> str:
     """
-    Send message to Groq AI and extract structured transaction data.
-    Returns dict with transaction data, or None if not a valid transaction.
+    If Groq returns a category not in the list (hallucination),
+    fall back to the closest match by checking if any list item
+    contains the returned string or vice versa.
+    Falls back to 'Other' / 'Business Income' if nothing matches.
     """
+    cat_lower = category.strip().lower()
+    candidates = EXPENSE_CATEGORIES if txn_type == "expense" else INCOME_CATEGORIES
+
+    # Exact match (case-insensitive)
+    for c in candidates:
+        if c.lower() == cat_lower:
+            return c
+
+    # Partial match — candidate contains returned string or vice versa
+    for c in candidates:
+        if cat_lower in c.lower() or c.lower() in cat_lower:
+            return c
+
+    # Fallback
+    logger.warning(f"Category '{category}' not in list for type '{txn_type}', using fallback.")
+    return "Other" if txn_type == "expense" else "Business Income"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public function
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def extract_transaction(text: str) -> dict | None:
+    """
+    Parse a natural-language transaction message.
+    Returns a dict with keys: type, category, amount, note
+    Returns None if the message is not a transaction.
+    """
+    client = _get_client()
+
     try:
-        logger.info(f"Sending to Groq: {message}")
-
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": message},
+                {"role": "user",   "content": text},
             ],
-            temperature=0.1,
-            max_tokens=200,
+            temperature=0.1,      # low temperature = more deterministic category picks
+            max_tokens=150,
         )
 
         raw = response.choices[0].message.content.strip()
-        logger.info(f"Groq response: {raw}")
+        logger.debug(f"Groq raw response: {raw}")
 
-        # Clean markdown code blocks if present
+        # Strip accidental markdown fences
         if raw.startswith("```"):
-            raw = raw.strip("`").strip()
+            raw = raw.split("```")[1]
             if raw.startswith("json"):
-                raw = raw[4:].strip()
+                raw = raw[4:]
+            raw = raw.strip()
 
         data = json.loads(raw)
 
-        # Check if AI flagged it as not a transaction
-        if data.get("error") == "not_a_transaction":
-            logger.info("Message not identified as a transaction")
+        # Return None if Groq signals not-a-transaction
+        if data is None or data.get("amount") is None:
             return None
 
-        # Validate required fields
-        if not all(k in data for k in ("type", "amount", "category", "note")):
-            logger.warning(f"Missing fields in Groq response: {data}")
-            return None
+        txn_type = str(data.get("type", "expense")).strip().lower()
+        if txn_type not in ("expense", "income"):
+            txn_type = "expense"
 
-        # Validate type
-        if data["type"] not in ("expense", "income"):
-            data["type"] = "expense"
+        # Validate & correct category
+        raw_category = str(data.get("category", "Other"))
+        category = _validate_category(txn_type, raw_category)
 
-        # Ensure amount is a number
-        data["amount"] = float(data["amount"])
+        # Safely parse amount
+        try:
+            amount = float(str(data.get("amount", 0)).replace(",", "").strip())
+        except (ValueError, TypeError):
+            amount = 0.0
 
-        return data
+        return {
+            "type":     txn_type,
+            "category": category,
+            "amount":   amount,
+            "note":     str(data.get("note", text))[:100],
+        }
 
     except json.JSONDecodeError as e:
-        logger.error(f"JSON parse error from Groq: {e} | Raw: {raw}")
+        logger.error(f"Groq JSON parse error: {e} | raw: {raw!r}")
         return None
     except Exception as e:
         logger.error(f"Groq API error: {e}")
