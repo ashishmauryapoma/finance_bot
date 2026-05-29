@@ -1,8 +1,8 @@
 """
 Telegram Finance Management Bot
-- Local dev:  runs in polling mode (no webhook needed)
-- Render.com: runs as Flask web service with Telegram webhook
-              Set WEBHOOK_URL env var to your Render app URL to activate webhook mode
+- Local dev:  python bot.py  → polling mode (no server needed)
+- Render.com: gunicorn bot:flask_app → webhook mode (free web service)
+              Activated when WEBHOOK_URL env var is set
 """
 
 import os
@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 
 from flask import Flask, request, jsonify
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -37,25 +37,19 @@ logger = logging.getLogger(__name__)
 
 WAITING_PASSWORD = 1
 
-# ── Flask app (used in webhook / web-service mode) ────────────────────────────
-flask_app = Flask(__name__)
-_ptb_app: Application = None
+# ─────────────────────────────────────────────────────────────────────────────
+# Build the PTB Application once at module load time
+# (gunicorn imports this module once; the app lives for the process lifetime)
+# ─────────────────────────────────────────────────────────────────────────────
 
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN not set.")
 
-def get_ptb_app() -> Application:
-    global _ptb_app
-    if _ptb_app is None:
-        token = os.getenv("TELEGRAM_BOT_TOKEN")
-        if not token:
-            raise ValueError("TELEGRAM_BOT_TOKEN not set.")
-        _ptb_app = Application.builder().token(token).build()
-        _register_handlers(_ptb_app)
-        logger.info("PTB application initialised")
-    return _ptb_app
-
+ptb_app: Application = Application.builder().token(TOKEN).build()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Telegram command / message handlers
+# Telegram handlers
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -233,104 +227,99 @@ async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def _register_handlers(app: Application):
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            WAITING_PASSWORD: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_password)
-            ],
-        },
-        fallbacks=[CommandHandler("start", start)],
-    )
-    app.add_handler(conv)
-    app.add_handler(CommandHandler("logout", logout))
-    app.add_handler(CommandHandler("recent", recent))
-    app.add_handler(CommandHandler("summary", summary))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.COMMAND, unknown))
+# ─────────────────────────────────────────────────────────────────────────────
+# Register all handlers
+# ─────────────────────────────────────────────────────────────────────────────
+
+conv = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        WAITING_PASSWORD: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_password)
+        ],
+    },
+    fallbacks=[CommandHandler("start", start)],
+)
+ptb_app.add_handler(conv)
+ptb_app.add_handler(CommandHandler("logout", logout))
+ptb_app.add_handler(CommandHandler("recent", recent))
+ptb_app.add_handler(CommandHandler("summary", summary))
+ptb_app.add_handler(CommandHandler("help", help_command))
+ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+ptb_app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Flask routes  (webhook mode — used on Render free web service)
+# Shared event loop for webhook mode
+# initialize() is called once; the loop stays open for all requests
 # ─────────────────────────────────────────────────────────────────────────────
+
+_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(_loop)
+_loop.run_until_complete(ptb_app.initialize())
+logger.info("PTB application initialized and ready")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Flask app
+# ─────────────────────────────────────────────────────────────────────────────
+
+flask_app = Flask(__name__)
+
 
 @flask_app.get("/")
 def health():
-    """Render health-check endpoint."""
+    """Render health-check — confirms the service is up."""
     return jsonify({"status": "ok", "service": "telegram-finance-bot"})
 
 
 @flask_app.post("/webhook")
 def webhook():
-    """Telegram pushes every update here."""
-    app = get_ptb_app()
+    """
+    Telegram calls this for every incoming update.
+    We feed it into PTB on the shared event loop and return 200 immediately.
+    """
     data = request.get_json(force=True)
-
-    async def process():
-        async with app:
-            update = Update.de_json(data, app.bot)
-            await app.process_update(update)
-
-    asyncio.run(process())
+    update = Update.de_json(data, ptb_app.bot)
+    _loop.run_until_complete(ptb_app.process_update(update))
     return jsonify({"ok": True})
 
 
 @flask_app.get("/set_webhook")
 def set_webhook():
     """
-    Register the webhook with Telegram.
-    Visit this URL once after deploying:
-      https://<your-app>.onrender.com/set_webhook
+    Call this once after deploying to register the webhook with Telegram.
+    Visit: https://<your-app>.onrender.com/set_webhook
     """
     webhook_url = os.getenv("WEBHOOK_URL", "").rstrip("/")
     if not webhook_url:
         return jsonify({"error": "WEBHOOK_URL env var not set"}), 400
 
     full_url = f"{webhook_url}/webhook"
-
-    async def do_set():
-        app = get_ptb_app()
-        async with app:
-            await app.bot.set_webhook(url=full_url)
-
-    asyncio.run(do_set())
+    _loop.run_until_complete(ptb_app.bot.set_webhook(url=full_url))
     logger.info(f"Webhook registered: {full_url}")
     return jsonify({"ok": True, "webhook_url": full_url})
 
 
 @flask_app.get("/delete_webhook")
 def delete_webhook():
-    """Remove the webhook — useful when switching back to local polling."""
-    async def do_delete():
-        app = get_ptb_app()
-        async with app:
-            await app.bot.delete_webhook()
-
-    asyncio.run(do_delete())
+    """Remove the webhook (useful when switching back to local polling)."""
+    _loop.run_until_complete(ptb_app.bot.delete_webhook())
     return jsonify({"ok": True, "message": "Webhook deleted"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Entry point
+# Entry point  —  python bot.py  → polling mode (local dev)
 # ─────────────────────────────────────────────────────────────────────────────
-
-def _run_polling():
-    """Local development: classic long-polling (no server needed)."""
-    logger.info("🔄 No WEBHOOK_URL set — starting in polling mode (local dev)")
-    app = get_ptb_app()
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     webhook_url = os.getenv("WEBHOOK_URL", "")
-
     if webhook_url:
-        # Webhook / production mode
         port = int(os.getenv("PORT", 8080))
         logger.info(f"🚀 Webhook mode — Flask on port {port}")
         flask_app.run(host="0.0.0.0", port=port)
     else:
-        # Polling mode — local dev
-        _run_polling()
+        logger.info("🔄 Polling mode — local dev")
+        # Re-initialize cleanly for polling mode
+        _loop.run_until_complete(ptb_app.shutdown())
+        ptb_app.run_polling(allowed_updates=Update.ALL_TYPES)
