@@ -23,7 +23,7 @@ from telegram.ext import (
 from dotenv import load_dotenv
 
 from groq_handler import extract_transaction
-from sheets_handler import append_transaction, get_recent_transactions, get_summary, get_balance
+from sheets_handler import append_transaction, get_recent_transactions, get_summary, get_balance, rebuild_summary
 from auth import verify_password, is_authenticated, set_authenticated
 from utils import format_confirmation, format_summary, format_recent
 
@@ -256,6 +256,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def fix_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if not is_authenticated(user_id):
+        await update.message.reply_text("🔐 Please /start and enter the password first.")
+        return
+    await update.message.reply_text("🔄 Rebuilding summary sheet...")
+    try:
+        rebuild_summary()
+        await update.message.reply_text("✅ Summary sheet rebuilt successfully!")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Failed to rebuild: {e}")
+
+
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "❓ Unknown command. Type /help for available options."
@@ -280,6 +293,7 @@ ptb_app.add_handler(CommandHandler("logout", logout))
 ptb_app.add_handler(CommandHandler("recent", recent))
 ptb_app.add_handler(CommandHandler("summary", summary))
 ptb_app.add_handler(CommandHandler("balance", balance))
+ptb_app.add_handler(CommandHandler("fix", fix_summary))
 ptb_app.add_handler(CommandHandler("help", help_command))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 ptb_app.add_handler(MessageHandler(filters.COMMAND, unknown))
