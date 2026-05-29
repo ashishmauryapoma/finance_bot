@@ -101,41 +101,6 @@ def _format_card(row: dict) -> str:
     )
 
 
-def _confirm_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Submit", callback_data="txn_submit"),
-        InlineKeyboardButton("✏️ Edit",   callback_data="txn_edit"),
-    ]])
-
-
-def _edit_field_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💱 Type",     callback_data="edit_type"),
-         InlineKeyboardButton("📂 Category", callback_data="edit_category")],
-        [InlineKeyboardButton("💵 Amount",   callback_data="edit_amount"),
-         InlineKeyboardButton("📝 Note",     callback_data="edit_note")],
-        [InlineKeyboardButton("🔙 Back",     callback_data="edit_back")],
-    ])
-
-
-def _type_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("💸 Expense", callback_data="set_type_expense"),
-        InlineKeyboardButton("💰 Income",  callback_data="set_type_income"),
-    ]])
-
-
-def _category_keyboard(txn_type: str) -> InlineKeyboardMarkup:
-    cats = EXPENSE_CATEGORIES if txn_type == "expense" else INCOME_CATEGORIES
-    rows = []
-    for i in range(0, len(cats), 2):
-        pair = cats[i:i+2]
-        rows.append([
-            InlineKeyboardButton(c, callback_data=f"set_cat_{c}")
-            for c in pair
-        ])
-    return InlineKeyboardMarkup(rows)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Auth handlers
