@@ -289,8 +289,8 @@ def _rebuild_summary_sheet():
 
     # ── Gather data ──────────────────────────────────────────────────────────
     txn_ws      = _get_txn_sheet()
-    all_rows    = txn_ws.get_all_records()
-    cur_month   = datetime.now(_IST).strftime("%m-%Y")   # matches dd-MM-YYYY dates
+    all_values  = txn_ws.get_all_values()   # safer than get_all_records
+    cur_month   = datetime.now(_IST).strftime("%m-%Y")   # e.g. "05-2026"
     month_label = datetime.now(_IST).strftime("%B %Y")
 
     total_income  = 0.0
@@ -298,23 +298,37 @@ def _rebuild_summary_sheet():
     by_category   = defaultdict(float)
     income_cats   = defaultdict(float)
 
-    for row in all_rows:
-        date_str = str(row.get("Date", ""))
-        # date stored as dd-mm-yyyy, check mm-yyyy suffix
-        if not date_str[3:].startswith(cur_month):
-            continue
+    if len(all_values) >= 2:
+        # Detect column positions from header row (robust to any order)
+        header = [h.strip().lower() for h in all_values[0]]
         try:
-            amt = float(row.get("Amount", 0))
-        except (ValueError, TypeError):
-            continue
-        t   = str(row.get("Type", "")).lower()
-        cat = str(row.get("Category", "Other"))
-        if t == "income":
-            total_income += amt
-            income_cats[cat] += amt
-        else:
-            total_expense += amt
-            by_category[cat] += amt
+            i_date = header.index("date")
+            i_type = header.index("type")
+            i_cat  = header.index("category")
+            i_amt  = header.index("amount")
+        except ValueError as e:
+            logger.error(f"Header column not found: {e}  headers={all_values[0]}")
+            i_date, i_type, i_cat, i_amt = 0, 2, 3, 4
+
+        for row in all_values[1:]:
+            if len(row) <= i_amt:
+                continue   # short/empty row
+            date_str = row[i_date].strip()
+            # date format dd-mm-yyyy: positions [3:] give "mm-yyyy"
+            if len(date_str) < 7 or date_str[3:] != cur_month:
+                continue
+            try:
+                amt = float(row[i_amt])
+            except (ValueError, TypeError):
+                continue
+            t   = row[i_type].strip().lower()
+            cat = row[i_cat].strip() or "Other"
+            if t == "income":
+                total_income += amt
+                income_cats[cat] += amt
+            else:
+                total_expense += amt
+                by_category[cat] += amt
 
     net = total_income - total_expense
 
@@ -486,33 +500,50 @@ def append_transaction(row: dict):
 
 def get_recent_transactions(user_id: str = None, limit: int = 10) -> list[dict]:
     ws       = _get_txn_sheet()
-    all_rows = list(reversed(ws.get_all_records()))
-    return all_rows[:limit] if all_rows else []
+    all_values = ws.get_all_values()
+    if len(all_values) < 2:
+        return []
+    header   = all_values[0]
+    data     = all_values[1:]
+    records  = [dict(zip(header, row)) for row in data]
+    return list(reversed(records))[:limit]
 
 
 def get_summary(user_id: str = None) -> dict:
     ws          = _get_txn_sheet()
-    all_rows    = ws.get_all_records()
-    cur_month   = datetime.now(_IST).strftime("%m-%Y")   # matches dd-MM-YYYY
+    all_values  = ws.get_all_values()
+    cur_month   = datetime.now(_IST).strftime("%m-%Y")
 
     total_income = total_expense = 0.0
     by_category  = defaultdict(float)
 
-    for row in all_rows:
-        date_str = str(row.get("Date", ""))
-        if not date_str[3:].startswith(cur_month):
-            continue
+    if len(all_values) >= 2:
+        header = [h.strip().lower() for h in all_values[0]]
         try:
-            amt = float(row.get("Amount", 0))
-        except (ValueError, TypeError):
-            continue
-        t   = str(row.get("Type", "")).lower()
-        cat = str(row.get("Category", "Other"))
-        if t == "income":
-            total_income += amt
-        else:
-            total_expense += amt
-            by_category[cat] += amt
+            i_date = header.index("date")
+            i_type = header.index("type")
+            i_cat  = header.index("category")
+            i_amt  = header.index("amount")
+        except ValueError:
+            i_date, i_type, i_cat, i_amt = 0, 2, 3, 4
+
+        for row in all_values[1:]:
+            if len(row) <= i_amt:
+                continue
+            date_str = row[i_date].strip()
+            if len(date_str) < 7 or date_str[3:] != cur_month:
+                continue
+            try:
+                amt = float(row[i_amt])
+            except (ValueError, TypeError):
+                continue
+            t   = row[i_type].strip().lower()
+            cat = row[i_cat].strip() or "Other"
+            if t == "income":
+                total_income += amt
+            else:
+                total_expense += amt
+                by_category[cat] += amt
 
     return {
         "month":         datetime.now(_IST).strftime("%B %Y"),
@@ -531,33 +562,45 @@ def get_balance(user_id: str = None) -> dict:
     - Current month income, expense, net
     - Largest expense category this month
     """
-    ws        = _get_txn_sheet()
-    all_rows  = ws.get_all_records()
-    cur_month = datetime.now(_IST).strftime("%m-%Y")
+    ws         = _get_txn_sheet()
+    all_values = ws.get_all_values()
+    cur_month  = datetime.now(_IST).strftime("%m-%Y")
 
     all_income = all_expense = 0.0
     month_income = month_expense = 0.0
     month_cats: dict = defaultdict(float)
 
-    for row in all_rows:
+    if len(all_values) >= 2:
+        header = [h.strip().lower() for h in all_values[0]]
         try:
-            amt = float(row.get("Amount", 0))
-        except (ValueError, TypeError):
-            continue
-        t        = str(row.get("Type", "")).lower()
-        date_str = str(row.get("Date", ""))
-        cat      = str(row.get("Category", "Other"))
-        is_month = date_str[3:].startswith(cur_month)
+            i_date = header.index("date")
+            i_type = header.index("type")
+            i_cat  = header.index("category")
+            i_amt  = header.index("amount")
+        except ValueError:
+            i_date, i_type, i_cat, i_amt = 0, 2, 3, 4
 
-        if t == "income":
-            all_income += amt
-            if is_month:
-                month_income += amt
-        else:
-            all_expense += amt
-            if is_month:
-                month_expense += amt
-                month_cats[cat] += amt
+        for row in all_values[1:]:
+            if len(row) <= i_amt:
+                continue
+            try:
+                amt = float(row[i_amt])
+            except (ValueError, TypeError):
+                continue
+            t        = row[i_type].strip().lower()
+            date_str = row[i_date].strip()
+            cat      = row[i_cat].strip() or "Other"
+            is_month = len(date_str) >= 7 and date_str[3:] == cur_month
+
+            if t == "income":
+                all_income += amt
+                if is_month:
+                    month_income += amt
+            else:
+                all_expense += amt
+                if is_month:
+                    month_expense += amt
+                    month_cats[cat] += amt
 
     top_cat = max(month_cats, key=month_cats.get) if month_cats else "—"
     top_cat_amt = month_cats.get(top_cat, 0)
