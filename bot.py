@@ -8,7 +8,7 @@ Telegram Finance Management Bot
 import os
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from flask import Flask, request, jsonify
 from telegram import Update, Bot
@@ -23,7 +23,7 @@ from telegram.ext import (
 from dotenv import load_dotenv
 
 from groq_handler import extract_transaction
-from sheets_handler import append_transaction, get_recent_transactions, get_summary
+from sheets_handler import append_transaction, get_recent_transactions, get_summary, get_balance
 from auth import verify_password, is_authenticated, set_authenticated
 from utils import format_confirmation, format_summary, format_recent
 
@@ -68,6 +68,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔧 *Commands:*\n"
             "/recent — Last 10 transactions\n"
             "/summary — Monthly summary\n"
+            "/balance — Remaining balance details\n"
             "/logout — Log out\n"
             "/help — Help",
             parse_mode="Markdown",
@@ -143,6 +144,38 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Could not fetch summary. Try again later.")
 
 
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if not is_authenticated(user_id):
+        await update.message.reply_text("🔐 Please /start and enter the password first.")
+        return
+    await update.message.reply_text("⏳ Calculating your balance...")
+    try:
+        data = get_balance(user_id)
+        net_all   = data["net_balance"]
+        net_month = data["month_net"]
+        net_all_icon   = "🟢" if net_all   >= 0 else "🔴"
+        net_month_icon = "🟢" if net_month >= 0 else "🔴"
+
+        msg = (
+            f"💰 *Remaining Balance — {data['month']}*\n\n"
+            f"📅 *This Month*\n"
+            f"  Income  : ₹{data['month_income']:,.2f}\n"
+            f"  Expense : ₹{data['month_expense']:,.2f}\n"
+            f"  {net_month_icon} Net     : ₹{net_month:,.2f}\n\n"
+            f"📊 *All Time*\n"
+            f"  Income  : ₹{data['all_income']:,.2f}\n"
+            f"  Expense : ₹{data['all_expense']:,.2f}\n"
+            f"  {net_all_icon} Balance : ₹{net_all:,.2f}\n\n"
+            f"🏷️ *Top Spend This Month*\n"
+            f"  {data['top_category']} — ₹{data['top_cat_amount']:,.2f}"
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Balance error: {e}")
+        await update.message.reply_text("⚠️ Could not fetch balance. Try again later.")
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "💡 *Finance Bot — Help*\n\n"
@@ -160,6 +193,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📊 *Commands:*\n"
         "/recent — Last 10 entries\n"
         "/summary — This month's summary\n"
+        "/balance — Remaining balance details\n"
         "/logout — Log out of the bot\n"
         "/help — This help message",
         parse_mode="Markdown",
@@ -199,15 +233,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        now = datetime.now()
+        _IST = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(tz=_IST)
         row = {
-            "date": now.strftime("%Y-%m-%d"),
+            "date": now.strftime("%d-%m-%Y"),
+            "timestamp": now.strftime("%I:%M:%S %p"),   # time only, 12-hr IST
             "type": transaction.get("type", "expense"),
             "category": transaction.get("category", "General"),
             "amount": transaction.get("amount", 0),
             "note": transaction.get("note", text),
             "user": username,
-            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
         }
 
         append_transaction(row)
@@ -244,6 +279,7 @@ ptb_app.add_handler(conv)
 ptb_app.add_handler(CommandHandler("logout", logout))
 ptb_app.add_handler(CommandHandler("recent", recent))
 ptb_app.add_handler(CommandHandler("summary", summary))
+ptb_app.add_handler(CommandHandler("balance", balance))
 ptb_app.add_handler(CommandHandler("help", help_command))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 ptb_app.add_handler(MessageHandler(filters.COMMAND, unknown))
