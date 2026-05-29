@@ -500,11 +500,7 @@ def append_transaction(row: dict):
     new_row_idx = len(all_values)          # 1-based
     _style_new_row(ws, new_row_idx, row.get("type", "expense"))
 
-    # Rebuild summary
-    try:
-        _rebuild_summary_sheet()
-    except Exception as e:
-        logger.warning(f"Summary rebuild failed (non-fatal): {e}")
+
 
     logger.info(f"Transaction appended: {values}")
 
