@@ -159,7 +159,7 @@ def _get_txn_sheet():
 
 
 def _apply_txn_header_style(ws):
-    """Bold colored header row + freeze + column widths."""
+    """Bold colored header row + freeze + column widths + force text format on date/timestamp."""
     ss      = _connect()
     sid     = ws.id
     col_pxs = [110, 90, 140, 100, 220, 110, 160]   # per column
@@ -182,6 +182,34 @@ def _apply_txn_header_style(ws):
                 }
             },
             "fields": "userEnteredFormat",
+        }
+    })
+
+    # Force Date column (A) to plain text format so YYYY-MM-DD stays as string
+    requests.append({
+        "repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": 1000,
+                      "startColumnIndex": 0, "endColumnIndex": 1},
+            "cell": {
+                "userEnteredFormat": {
+                    "numberFormat": {"type": "TEXT"}
+                }
+            },
+            "fields": "userEnteredFormat.numberFormat",
+        }
+    })
+
+    # Force Timestamp column (G, index 6) to plain text
+    requests.append({
+        "repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": 1000,
+                      "startColumnIndex": 6, "endColumnIndex": 7},
+            "cell": {
+                "userEnteredFormat": {
+                    "numberFormat": {"type": "TEXT"}
+                }
+            },
+            "fields": "userEnteredFormat.numberFormat",
         }
     })
 
@@ -434,7 +462,7 @@ def append_transaction(row: dict):
         row.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
     ]
 
-    ws.append_row(values, value_input_option="USER_ENTERED")
+    ws.append_row(values, value_input_option="RAW")
 
     # Style the new row
     all_values  = ws.get_all_values()
