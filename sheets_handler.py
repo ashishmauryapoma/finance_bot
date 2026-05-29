@@ -347,10 +347,12 @@ def _rebuild_summary_sheet():
 
     exp_start_row = len(data) + 1   # 1-based
     for cat, amt in sorted(by_category.items(), key=lambda x: x[1], reverse=True):
+        if amt <= 0:
+            continue   # skip zero-amount categories
         pct = f"{(amt / total_expense * 100):.1f}%" if total_expense else "0%"
-        data.append([cat, amt, pct])
+        data.append([cat, round(amt, 2), pct])
 
-    data.append(["TOTAL EXPENSES", total_expense, "100%"])
+    data.append(["TOTAL EXPENSES", round(total_expense, 2), "100%"])
     exp_end_row = len(data)
 
     # Spacer
@@ -362,10 +364,12 @@ def _rebuild_summary_sheet():
 
     inc_start_row = len(data) + 1
     for cat, amt in sorted(income_cats.items(), key=lambda x: x[1], reverse=True):
+        if amt <= 0:
+            continue   # skip zero-amount categories
         pct = f"{(amt / total_income * 100):.1f}%" if total_income else "0%"
-        data.append([cat, amt, pct])
+        data.append([cat, round(amt, 2), pct])
 
-    data.append(["TOTAL INCOME", total_income, "100%"])
+    data.append(["TOTAL INCOME", round(total_income, 2), "100%"])
     inc_end_row = len(data)
 
     # Spacer
@@ -373,14 +377,14 @@ def _rebuild_summary_sheet():
 
     # ── Net summary ──────────────────────────────────────────────────────────
     data.append(["💰 NET SUMMARY", "", ""])
-    data.append(["Total Income",  total_income,  ""])
-    data.append(["Total Expense", total_expense, ""])
+    data.append(["Total Income",  round(total_income, 2),  ""])
+    data.append(["Total Expense", round(total_expense, 2), ""])
     net_row = len(data) + 1
-    data.append(["Net Balance",   net,            "Surplus" if net >= 0 else "Deficit"])
+    data.append(["Net Balance",   round(net, 2),  "Surplus" if net >= 0 else "Deficit"])
 
     # ── Write to sheet ───────────────────────────────────────────────────────
     ws.clear()
-    ws.update("A1", data, value_input_option="USER_ENTERED")
+    ws.update("A1", data, value_input_option="RAW")
 
     # ── Batch format ─────────────────────────────────────────────────────────
     total_rows = len(data)
@@ -472,12 +476,19 @@ def append_transaction(row: dict):
     ws = _get_txn_sheet()
 
     now_ist = datetime.now(_IST)
+
+    # Safely parse amount — Groq sometimes returns a string
+    try:
+        amount = float(str(row.get("amount", 0)).replace(",", "").strip())
+    except (ValueError, TypeError):
+        amount = 0.0
+
     values = [
         row.get("date", now_ist.strftime("%d-%m-%Y")),
         row.get("timestamp", now_ist.strftime("%I:%M:%S %p")),   # time only, 12-hr
-        row.get("type", "expense"),
-        row.get("category", "Other"),
-        row.get("amount", 0),
+        row.get("type", "expense").strip().lower(),
+        row.get("category", "Other").strip(),
+        round(amount, 2),
         row.get("note", ""),
         row.get("user", ""),
     ]
@@ -616,3 +627,7 @@ def get_balance(user_id: str = None) -> dict:
         "top_category":   top_cat,
         "top_cat_amount": top_cat_amt,
     }
+
+def rebuild_summary():
+    """Public wrapper — force a full summary sheet rebuild."""
+    _rebuild_summary_sheet()
