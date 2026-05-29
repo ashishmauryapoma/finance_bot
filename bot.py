@@ -60,11 +60,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"👋 Welcome back, *{name}*!\n\n"
             "I'm your personal finance assistant. Just tell me what you spent or earned.\n\n"
-            "📝 *Examples:*\n"
-            "• `Spent 500 on petrol`\n"
-            "• `Received 10000 salary`\n"
-            "• `Paanch sau ka khana khaya`\n"
-            "• `Paid 1200 for electricity bill`\n\n"
             "🔧 *Commands:*\n"
             "/recent — Last 10 transactions\n"
             "/summary — Monthly summary\n"
@@ -91,12 +86,9 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_authenticated(user_id, True)
         await update.message.reply_text(
             "✅ *Access granted!* Welcome aboard.\n\n"
+            "✅ *Access granted!* Welcome aboard.\n\n"
             "Just send me any financial transaction in plain language — "
-            "English or Hindi, I understand both!\n\n"
-            "📝 *Try:*\n"
-            "• `Spent 500 on petrol`\n"
-            "• `1000 rupay grocery mein gaye`\n"
-            "• `Received 5000 from client`",
+            "English or Hindi, I understand both!",
             parse_mode="Markdown",
         )
         return ConversationHandler.END
@@ -181,15 +173,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💡 *Finance Bot — Help*\n\n"
         "*How to log a transaction:*\n"
         "Just type naturally! I understand English and Hindi.\n\n"
-        "📤 *Expense examples:*\n"
-        "• `Spent 500 on petrol`\n"
-        "• `Paid 1200 rent`\n"
-        "• `Grocery 850 rupay`\n"
-        "• `200 ka chai nashta`\n\n"
-        "📥 *Income examples:*\n"
-        "• `Received 50000 salary`\n"
-        "• `Client payment 15000`\n"
-        "• `Freelance income 8000`\n\n"
         "📊 *Commands:*\n"
         "/recent — Last 10 entries\n"
         "/summary — This month's summary\n"
@@ -225,11 +208,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not transaction:
             await update.message.reply_text(
-                "🤔 I couldn't understand that as a financial transaction.\n\n"
-                "Try something like:\n"
-                "• `Spent 500 on petrol`\n"
-                "• `Received 10000 salary`\n"
-                "• `1200 rupay grocery`"
+                "🤔 I couldn't understand that as a financial transaction. Please try again."
             )
             return
 
@@ -373,3 +352,4 @@ if __name__ == "__main__":
         # Re-initialize cleanly for polling mode
         _loop.run_until_complete(ptb_app.shutdown())
         ptb_app.run_polling(allowed_updates=Update.ALL_TYPES)
+    
