@@ -6,8 +6,11 @@ Google Sheets handler — read and write financial transactions
 
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from collections import defaultdict
+
+# IST = UTC+5:30
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 import gspread
 from gspread.utils import rowcol_to_a1
@@ -23,7 +26,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-HEADERS = ["Date", "Type", "Category", "Amount", "Note", "User", "Timestamp"]
+HEADERS = ["Date", "Timestamp", "Type", "Category", "Amount", "Note", "User"]
 
 # ── Styling constants ─────────────────────────────────────────────────────────
 HEADER_BG        = {"red": 0.157, "green": 0.306, "blue": 0.612}   # deep blue
@@ -162,7 +165,7 @@ def _apply_txn_header_style(ws):
     """Bold colored header row + freeze + column widths + force text format on date/timestamp."""
     ss      = _connect()
     sid     = ws.id
-    col_pxs = [110, 90, 140, 100, 220, 110, 160]   # per column
+    col_pxs = [110, 130, 90, 140, 100, 220, 110]   # Date, Timestamp, Type, Category, Amount, Note, User
 
     requests = [_freeze_request(sid, rows=1)]
     requests += [_col_width_request(sid, i, px) for i, px in enumerate(col_pxs)]
@@ -185,7 +188,7 @@ def _apply_txn_header_style(ws):
         }
     })
 
-    # Force Date column (A) to plain text format so YYYY-MM-DD stays as string
+    # Force Date column (A) to plain text format so dd-mm-yyyy stays as string
     requests.append({
         "repeatCell": {
             "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": 1000,
@@ -199,11 +202,11 @@ def _apply_txn_header_style(ws):
         }
     })
 
-    # Force Timestamp column (G, index 6) to plain text
+    # Force Timestamp column (B, index 1) to plain text
     requests.append({
         "repeatCell": {
             "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": 1000,
-                      "startColumnIndex": 6, "endColumnIndex": 7},
+                      "startColumnIndex": 1, "endColumnIndex": 2},
             "cell": {
                 "userEnteredFormat": {
                     "numberFormat": {"type": "TEXT"}
@@ -244,11 +247,11 @@ def _style_new_row(ws, row_index: int, row_type: str):
         }
     }]
 
-    # Amount column (index 3) gets colored text
+    # Amount column (index 4) gets colored text
     requests.append({
         "repeatCell": {
             "range": {"sheetId": sid, "startRowIndex": ri, "endRowIndex": ri + 1,
-                      "startColumnIndex": 3, "endColumnIndex": 4},
+                      "startColumnIndex": 4, "endColumnIndex": 5},
             "cell": {
                 "userEnteredFormat": {
                     **_cell_fmt(bg=bg, fg=amt_fg, bold=True,
@@ -287,8 +290,8 @@ def _rebuild_summary_sheet():
     # ── Gather data ──────────────────────────────────────────────────────────
     txn_ws      = _get_txn_sheet()
     all_rows    = txn_ws.get_all_records()
-    cur_month   = datetime.now().strftime("%Y-%m")
-    month_label = datetime.now().strftime("%B %Y")
+    cur_month   = datetime.now(_IST).strftime("%m-%Y")   # matches dd-MM-YYYY dates
+    month_label = datetime.now(_IST).strftime("%B %Y")
 
     total_income  = 0.0
     total_expense = 0.0
@@ -296,7 +299,9 @@ def _rebuild_summary_sheet():
     income_cats   = defaultdict(float)
 
     for row in all_rows:
-        if not str(row.get("Date", "")).startswith(cur_month):
+        date_str = str(row.get("Date", ""))
+        # date stored as dd-mm-yyyy, check mm-yyyy suffix
+        if not date_str[3:].startswith(cur_month):
             continue
         try:
             amt = float(row.get("Amount", 0))
@@ -452,14 +457,15 @@ def append_transaction(row: dict):
     """Append a transaction row, style it, then refresh the Summary sheet."""
     ws = _get_txn_sheet()
 
+    now_ist = datetime.now(_IST)
     values = [
-        row.get("date", ""),
+        row.get("date", now_ist.strftime("%d-%m-%Y")),
+        row.get("timestamp", now_ist.strftime("%I:%M:%S %p")),   # time only, 12-hr
         row.get("type", "expense"),
         row.get("category", "Other"),
         row.get("amount", 0),
         row.get("note", ""),
         row.get("user", ""),
-        row.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
     ]
 
     ws.append_row(values, value_input_option="RAW")
@@ -487,13 +493,14 @@ def get_recent_transactions(user_id: str = None, limit: int = 10) -> list[dict]:
 def get_summary(user_id: str = None) -> dict:
     ws          = _get_txn_sheet()
     all_rows    = ws.get_all_records()
-    cur_month   = datetime.now().strftime("%Y-%m")
+    cur_month   = datetime.now(_IST).strftime("%m-%Y")   # matches dd-MM-YYYY
 
     total_income = total_expense = 0.0
     by_category  = defaultdict(float)
 
     for row in all_rows:
-        if not str(row.get("Date", "")).startswith(cur_month):
+        date_str = str(row.get("Date", ""))
+        if not date_str[3:].startswith(cur_month):
             continue
         try:
             amt = float(row.get("Amount", 0))
@@ -508,10 +515,61 @@ def get_summary(user_id: str = None) -> dict:
             by_category[cat] += amt
 
     return {
-        "month":         datetime.now().strftime("%B %Y"),
+        "month":         datetime.now(_IST).strftime("%B %Y"),
         "total_income":  total_income,
         "total_expense": total_expense,
         "net":           total_income - total_expense,
         "by_category":   dict(sorted(by_category.items(),
                                      key=lambda x: x[1], reverse=True)),
+    }
+
+
+def get_balance(user_id: str = None) -> dict:
+    """
+    Return a running balance breakdown:
+    - All-time total income, total expense, net balance
+    - Current month income, expense, net
+    - Largest expense category this month
+    """
+    ws        = _get_txn_sheet()
+    all_rows  = ws.get_all_records()
+    cur_month = datetime.now(_IST).strftime("%m-%Y")
+
+    all_income = all_expense = 0.0
+    month_income = month_expense = 0.0
+    month_cats: dict = defaultdict(float)
+
+    for row in all_rows:
+        try:
+            amt = float(row.get("Amount", 0))
+        except (ValueError, TypeError):
+            continue
+        t        = str(row.get("Type", "")).lower()
+        date_str = str(row.get("Date", ""))
+        cat      = str(row.get("Category", "Other"))
+        is_month = date_str[3:].startswith(cur_month)
+
+        if t == "income":
+            all_income += amt
+            if is_month:
+                month_income += amt
+        else:
+            all_expense += amt
+            if is_month:
+                month_expense += amt
+                month_cats[cat] += amt
+
+    top_cat = max(month_cats, key=month_cats.get) if month_cats else "—"
+    top_cat_amt = month_cats.get(top_cat, 0)
+
+    return {
+        "month":          datetime.now(_IST).strftime("%B %Y"),
+        "all_income":     all_income,
+        "all_expense":    all_expense,
+        "net_balance":    all_income - all_expense,
+        "month_income":   month_income,
+        "month_expense":  month_expense,
+        "month_net":      month_income - month_expense,
+        "top_category":   top_cat,
+        "top_cat_amount": top_cat_amt,
     }
