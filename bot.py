@@ -6,13 +6,12 @@ Telegram Finance Management Bot
 """
 
 import os
-import json
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 
 from flask import Flask, request, jsonify
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -21,6 +20,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
     ConversationHandler,
+    PicklePersistence,
 )
 from dotenv import load_dotenv
 
@@ -43,25 +43,25 @@ logger = logging.getLogger(__name__)
 
 WAITING_PASSWORD = 1
 
-# Edit sub-states
-EDIT_CHOOSE_FIELD = 10
-EDIT_TYPE         = 11
-EDIT_CATEGORY     = 12
-EDIT_AMOUNT       = 13
-EDIT_NOTE         = 14
-
 # IST timezone
 _IST = timezone(timedelta(hours=5, minutes=30))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Build PTB Application
+# Build PTB Application  (PicklePersistence keeps user_data across requests)
 # ─────────────────────────────────────────────────────────────────────────────
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set.")
 
-ptb_app: Application = Application.builder().token(TOKEN).build()
+_persistence = PicklePersistence(filepath="bot_persistence.pkl")
+
+ptb_app: Application = (
+    Application.builder()
+    .token(TOKEN)
+    .persistence(_persistence)
+    .build()
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -86,20 +86,53 @@ def _build_row(transaction: dict, username: str) -> dict:
 
 
 def _format_card(row: dict) -> str:
-    """Build the transaction confirmation card text."""
     type_label = "💸 Expense" if row["type"] == "expense" else "💰 Income"
-    cat_emoji  = "📂"
     return (
         f"📤 *Transaction Preview*\n"
         f"{'─' * 28}\n"
-        f"📅 *Date:*     {row['date']}\n"
-        f"💱 *Type:*     {type_label}\n"
-        f"{cat_emoji} *Category:* {row['category']}\n"
-        f"💵 *Amount:*  ₹{row['amount']:,.2f}\n"
-        f"📝 *Note:*     {row['note']}\n"
+        f"📅 *Date:*      {row['date']}\n"
+        f"💱 *Type:*      {type_label}\n"
+        f"📂 *Category:* {row['category']}\n"
+        f"💵 *Amount:*   ₹{row['amount']:,.2f}\n"
+        f"📝 *Note:*      {row['note']}\n"
         f"{'─' * 28}"
     )
 
+
+def _confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Submit", callback_data="txn_submit"),
+        InlineKeyboardButton("✏️ Edit",   callback_data="txn_edit"),
+    ]])
+
+
+def _edit_field_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💱 Type",     callback_data="edit_type"),
+         InlineKeyboardButton("📂 Category", callback_data="edit_category")],
+        [InlineKeyboardButton("💵 Amount",   callback_data="edit_amount"),
+         InlineKeyboardButton("📝 Note",     callback_data="edit_note")],
+        [InlineKeyboardButton("🔙 Back",     callback_data="edit_back")],
+    ])
+
+
+def _type_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("💸 Expense", callback_data="set_type_expense"),
+        InlineKeyboardButton("💰 Income",  callback_data="set_type_income"),
+    ]])
+
+
+def _category_keyboard(txn_type: str) -> InlineKeyboardMarkup:
+    cats = EXPENSE_CATEGORIES if txn_type == "expense" else INCOME_CATEGORIES
+    rows = []
+    for i in range(0, len(cats), 2):
+        pair = cats[i:i+2]
+        rows.append([
+            InlineKeyboardButton(c, callback_data=f"set_cat_{c}")
+            for c in pair
+        ])
+    return InlineKeyboardMarkup(rows)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -122,6 +155,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/help — Help",
             parse_mode="Markdown",
         )
+        return ConversationHandler.END
     else:
         await update.message.reply_text(
             f"🔐 Welcome, *{name}*!\n\n"
@@ -156,13 +190,14 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     set_authenticated(user_id, False)
+    context.user_data.clear()
     await update.message.reply_text(
         "👋 Logged out successfully. Use /start to log in again."
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Main message handler — extract → show card with buttons
+# Main message handler — handles new transactions AND edit replies
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -181,6 +216,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         return
 
+    # ── If waiting for an edit reply (amount / note) ──────────────────────────
+    edit_field = context.user_data.get("edit_field")
+    row        = context.user_data.get("pending_txn")
+
+    if edit_field and row:
+        context.user_data.pop("edit_field", None)
+
+        if edit_field == "amount":
+            try:
+                row["amount"] = float(text.replace(",", "").replace("₹", "").strip())
+            except ValueError:
+                await update.message.reply_text(
+                    "⚠️ Invalid amount. Please send a number (e.g. 500)."
+                )
+                context.user_data["edit_field"] = "amount"   # re-arm
+                return
+        elif edit_field == "note":
+            row["note"] = text[:100]
+
+        context.user_data["pending_txn"] = row
+        await update.message.reply_text(
+            _format_card(row),
+            parse_mode="Markdown",
+            reply_markup=_confirm_keyboard(),
+        )
+        return
+
+    # ── New transaction ───────────────────────────────────────────────────────
     await update.message.reply_chat_action("typing")
 
     try:
@@ -193,8 +256,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         row = _build_row(transaction, username)
-
-        # Store pending transaction in user_data until Submit is pressed
         context.user_data["pending_txn"] = row
         context.user_data["username"]    = username
 
@@ -212,7 +273,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Callback query handler — Submit / Edit buttons
+# Callback query handler — all inline button presses
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -220,7 +281,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(query.from_user.id)
     data    = query.data
 
-    await query.answer()   # removes the loading spinner on the button
+    await query.answer()   # removes spinner immediately
 
     if not is_authenticated(user_id):
         await query.edit_message_text("🔐 Session expired. Please /start again.")
@@ -228,22 +289,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     row = context.user_data.get("pending_txn")
 
+    # Guard: row must exist for all actions
+    if row is None:
+        await query.edit_message_text(
+            "⚠️ Session expired — no pending transaction found.\n"
+            "Please send your transaction again."
+        )
+        return
+
     # ── Submit ────────────────────────────────────────────────────────────────
     if data == "txn_submit":
-        if not row:
-            await query.edit_message_text("⚠️ No pending transaction found. Please send it again.")
-            return
         try:
             append_transaction(row)
             type_label = "💸 Expense" if row["type"] == "expense" else "💰 Income"
             await query.edit_message_text(
                 f"📤 *Transaction Recorded!*\n"
                 f"{'─' * 28}\n"
-                f"📅 *Date:*     {row['date']}\n"
-                f"💱 *Type:*     {type_label}\n"
+                f"📅 *Date:*      {row['date']}\n"
+                f"💱 *Type:*      {type_label}\n"
                 f"📂 *Category:* {row['category']}\n"
-                f"💵 *Amount:*  ₹{row['amount']:,.2f}\n"
-                f"📝 *Note:*     {row['note']}\n"
+                f"💵 *Amount:*   ₹{row['amount']:,.2f}\n"
+                f"📝 *Note:*      {row['note']}\n"
                 f"{'─' * 28}\n\n"
                 f"✅ *Saved to Google Sheets!*",
                 parse_mode="Markdown",
@@ -269,7 +335,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=_confirm_keyboard(),
         )
 
-    # ── Edit Type — show inline buttons ──────────────────────────────────────
+    # ── Edit Type ─────────────────────────────────────────────────────────────
     elif data == "edit_type":
         await query.edit_message_text(
             _format_card(row) + "\n\n*Select the transaction type:*",
@@ -295,7 +361,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=_edit_field_keyboard(),
         )
 
-    # ── Edit Category — show category buttons ────────────────────────────────
+    # ── Edit Category ─────────────────────────────────────────────────────────
     elif data == "edit_category":
         await query.edit_message_text(
             f"*Select a category ({row['type']}):*",
@@ -313,70 +379,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=_edit_field_keyboard(),
         )
 
-    # ── Edit Amount — ask for text reply ─────────────────────────────────────
+    # ── Edit Amount ───────────────────────────────────────────────────────────
     elif data == "edit_amount":
         context.user_data["edit_field"] = "amount"
         await query.edit_message_text(
-            _format_card(row) + "\n\n*Send the new amount:*",
+            _format_card(row) + "\n\n*Send the new amount as a message:*",
             parse_mode="Markdown",
         )
 
-    # ── Edit Note — ask for text reply ───────────────────────────────────────
+    # ── Edit Note ─────────────────────────────────────────────────────────────
     elif data == "edit_note":
         context.user_data["edit_field"] = "note"
         await query.edit_message_text(
-            _format_card(row) + "\n\n*Send the new note:*",
+            _format_card(row) + "\n\n*Send the new note as a message:*",
             parse_mode="Markdown",
         )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Text reply handler for amount / note edits
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def handle_edit_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id  = str(update.effective_user.id)
-    username = (
-        update.effective_user.username
-        or update.effective_user.first_name
-        or "Unknown"
-    )
-
-    if not is_authenticated(user_id):
-        await update.message.reply_text("🔐 You need to log in first. Use /start to begin.")
-        return
-
-    edit_field = context.user_data.get("edit_field")
-    row        = context.user_data.get("pending_txn")
-
-    # If no edit is pending, treat as a new transaction
-    if not edit_field or not row:
-        await handle_message(update, context)
-        return
-
-    text = update.message.text.strip()
-    context.user_data.pop("edit_field", None)
-
-    if edit_field == "amount":
-        try:
-            row["amount"] = float(text.replace(",", "").replace("₹", "").strip())
-        except ValueError:
-            await update.message.reply_text(
-                "⚠️ Invalid amount. Please send a number (e.g. 500)."
-            )
-            context.user_data["edit_field"] = "amount"
-            return
-
-    elif edit_field == "note":
-        row["note"] = text[:100]
-
-    context.user_data["pending_txn"] = row
-
-    await update.message.reply_text(
-        _format_card(row),
-        parse_mode="Markdown",
-        reply_markup=_confirm_keyboard(),
-    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -419,10 +436,10 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Calculating your balance...")
     try:
         data = get_balance(user_id)
-        net_all       = data["net_balance"]
-        net_month     = data["month_net"]
-        net_all_icon  = "🟢" if net_all   >= 0 else "🔴"
-        net_month_icon= "🟢" if net_month >= 0 else "🔴"
+        net_all        = data["net_balance"]
+        net_month      = data["month_net"]
+        net_all_icon   = "🟢" if net_all   >= 0 else "🔴"
+        net_month_icon = "🟢" if net_month >= 0 else "🔴"
 
         msg = (
             f"💰 *Remaining Balance — {data['month']}*\n\n"
@@ -490,7 +507,9 @@ conv = ConversationHandler(
         ],
     },
     fallbacks=[CommandHandler("start", start)],
+    per_message=False,
 )
+
 ptb_app.add_handler(conv)
 ptb_app.add_handler(CommandHandler("logout",  logout))
 ptb_app.add_handler(CommandHandler("recent",  recent))
@@ -499,22 +518,22 @@ ptb_app.add_handler(CommandHandler("balance", balance))
 ptb_app.add_handler(CommandHandler("fix",     fix_summary))
 ptb_app.add_handler(CommandHandler("help",    help_command))
 ptb_app.add_handler(CallbackQueryHandler(handle_callback))
-ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_reply))
+ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 ptb_app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Shared event loop for webhook mode
+# Shared event loop — used by Flask webhook calls
 # ─────────────────────────────────────────────────────────────────────────────
 
 _loop = asyncio.new_event_loop()
 asyncio.set_event_loop(_loop)
 _loop.run_until_complete(ptb_app.initialize())
-logger.info("PTB application initialized and ready")
+logger.info("PTB application initialized and ready.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Flask app
+# Flask app (webhook mode — Render.com / any WSGI host)
 # ─────────────────────────────────────────────────────────────────────────────
 
 flask_app = Flask(__name__)
@@ -527,9 +546,12 @@ def health():
 
 @flask_app.post("/webhook")
 def webhook():
-    data   = request.get_json(force=True)
-    update = Update.de_json(data, ptb_app.bot)
-    _loop.run_until_complete(ptb_app.process_update(update))
+    try:
+        data   = request.get_json(force=True)
+        update = Update.de_json(data, ptb_app.bot)
+        _loop.run_until_complete(ptb_app.process_update(update))
+    except Exception as e:
+        logger.error(f"Webhook processing error: {e}")
     return jsonify({"ok": True})
 
 
