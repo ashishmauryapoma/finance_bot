@@ -1,7 +1,7 @@
 """
 Telegram Finance Management Bot
 - Local dev:  python bot.py  → polling mode
-- Render.com: gunicorn bot:flask_app --worker-class sync --workers 1
+- Render.com: gunicorn bot:flask_app --workers 1 --worker-class sync --timeout 120
               Set WEBHOOK_URL env var to activate webhook mode
 """
 
@@ -11,20 +11,18 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 from flask import Flask, request, jsonify
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     filters,
     ContextTypes,
     ConversationHandler,
-    PicklePersistence,
 )
 from dotenv import load_dotenv
 
-from groq_handler import extract_transaction, EXPENSE_CATEGORIES, INCOME_CATEGORIES
+from groq_handler import extract_transaction
 from sheets_handler import (
     append_transaction, get_recent_transactions,
     get_summary, get_balance, rebuild_summary,
@@ -40,30 +38,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Conversation states
-# ─────────────────────────────────────────────────────────────────────────────
-
 WAITING_PASSWORD = 1
 _IST = timezone(timedelta(hours=5, minutes=30))
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PTB Application — built once, reused across requests
-# ─────────────────────────────────────────────────────────────────────────────
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set.")
 
-
-def _make_app() -> Application:
-    persistence = PicklePersistence(filepath="bot_persistence.pkl")
-    return (
-        Application.builder()
-        .token(TOKEN)
-        .persistence(persistence)
-        .build()
-    )
+ptb_app: Application = Application.builder().token(TOKEN).build()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -87,10 +69,10 @@ def _build_row(transaction: dict, username: str) -> dict:
     }
 
 
-def _format_card(row: dict) -> str:
+def _format_saved(row: dict) -> str:
     type_label = "💸 Expense" if row["type"] == "expense" else "💰 Income"
     return (
-        f"📤 *Transaction Preview*\n"
+        f"✅ *Transaction Saved!*\n"
         f"{'─' * 28}\n"
         f"📅 *Date:*      {row['date']}\n"
         f"💱 *Type:*      {type_label}\n"
@@ -99,42 +81,6 @@ def _format_card(row: dict) -> str:
         f"📝 *Note:*      {row['note']}\n"
         f"{'─' * 28}"
     )
-
-
-def _confirm_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Submit", callback_data="txn_submit"),
-        InlineKeyboardButton("✏️ Edit",   callback_data="txn_edit"),
-    ]])
-
-
-def _edit_field_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💱 Type",     callback_data="edit_type"),
-         InlineKeyboardButton("📂 Category", callback_data="edit_category")],
-        [InlineKeyboardButton("💵 Amount",   callback_data="edit_amount"),
-         InlineKeyboardButton("📝 Note",     callback_data="edit_note")],
-        [InlineKeyboardButton("🔙 Back",     callback_data="edit_back")],
-    ])
-
-
-def _type_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("💸 Expense", callback_data="set_type_expense"),
-        InlineKeyboardButton("💰 Income",  callback_data="set_type_income"),
-    ]])
-
-
-def _category_keyboard(txn_type: str) -> InlineKeyboardMarkup:
-    cats = EXPENSE_CATEGORIES if txn_type == "expense" else INCOME_CATEGORIES
-    rows = []
-    for i in range(0, len(cats), 2):
-        pair = cats[i:i+2]
-        rows.append([
-            InlineKeyboardButton(c, callback_data=f"set_cat_{c}")
-            for c in pair
-        ])
-    return InlineKeyboardMarkup(rows)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -148,7 +94,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_authenticated(user_id):
         await update.message.reply_text(
             f"👋 Welcome back, *{name}*!\n\n"
-            "Just tell me what you spent or earned.\n\n"
+            "Just tell me what you spent or earned and I'll save it.\n\n"
             "🔧 *Commands:*\n"
             "/recent — Last 10 transactions\n"
             "/summary — Monthly summary\n"
@@ -191,14 +137,13 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     set_authenticated(user_id, False)
-    context.user_data.clear()
     await update.message.reply_text(
         "👋 Logged out. Use /start to log in again."
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Main message handler
+# Main message handler — parse and save immediately, no buttons
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -217,35 +162,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         return
 
-    # ── Edit reply (amount / note) ────────────────────────────────────────────
-    edit_field = context.user_data.get("edit_field")
-    row        = context.user_data.get("pending_txn")
-
-    if edit_field and row:
-        context.user_data.pop("edit_field", None)
-
-        if edit_field == "amount":
-            try:
-                row["amount"] = float(text.replace(",", "").replace("₹", "").strip())
-            except ValueError:
-                await update.message.reply_text("⚠️ Invalid amount. Send a number like 500.")
-                context.user_data["edit_field"] = "amount"
-                return
-        elif edit_field == "note":
-            row["note"] = text[:100]
-
-        context.user_data["pending_txn"] = row
-        await update.message.reply_text(
-            _format_card(row),
-            parse_mode="Markdown",
-            reply_markup=_confirm_keyboard(),
-        )
-        return
-
-    # ── New transaction ───────────────────────────────────────────────────────
     await update.message.reply_chat_action("typing")
+
     try:
         transaction = await extract_transaction(text)
+
         if not transaction:
             await update.message.reply_text(
                 "🤔 Couldn't understand that as a transaction. Please try again."
@@ -253,132 +174,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         row = _build_row(transaction, username)
-        context.user_data["pending_txn"] = row
-        context.user_data["username"]    = username
+        append_transaction(row)
 
         await update.message.reply_text(
-            _format_card(row),
+            _format_saved(row),
             parse_mode="Markdown",
-            reply_markup=_confirm_keyboard(),
         )
+
     except Exception as e:
-        logger.error(f"handle_message error: {e}")
+        logger.error(f"handle_message error: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Something went wrong. Please try again.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Callback query handler
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query   = update.callback_query
-    user_id = str(query.from_user.id)
-    data    = query.data
-
-    # Answer immediately to remove Telegram's loading spinner
-    await query.answer()
-
-    if not is_authenticated(user_id):
-        await query.edit_message_text("🔐 Session expired. Please /start again.")
-        return
-
-    row = context.user_data.get("pending_txn")
-
-    if row is None:
-        await query.edit_message_text(
-            "⚠️ No pending transaction found.\nPlease send your transaction again."
-        )
-        return
-
-    if data == "txn_submit":
-        try:
-            append_transaction(row)
-            type_label = "💸 Expense" if row["type"] == "expense" else "💰 Income"
-            await query.edit_message_text(
-                f"✅ *Transaction Saved!*\n"
-                f"{'─' * 28}\n"
-                f"📅 *Date:*      {row['date']}\n"
-                f"💱 *Type:*      {type_label}\n"
-                f"📂 *Category:* {row['category']}\n"
-                f"💵 *Amount:*   ₹{row['amount']:,.2f}\n"
-                f"📝 *Note:*      {row['note']}\n"
-                f"{'─' * 28}\n\n"
-                f"📊 Recorded in Google Sheets!",
-                parse_mode="Markdown",
-            )
-            context.user_data.pop("pending_txn", None)
-        except Exception as e:
-            logger.error(f"Submit error: {e}")
-            await query.edit_message_text("⚠️ Failed to save. Please try again.")
-
-    elif data == "txn_edit":
-        await query.edit_message_text(
-            _format_card(row) + "\n\n*What would you like to edit?*",
-            parse_mode="Markdown",
-            reply_markup=_edit_field_keyboard(),
-        )
-
-    elif data == "edit_back":
-        await query.edit_message_text(
-            _format_card(row),
-            parse_mode="Markdown",
-            reply_markup=_confirm_keyboard(),
-        )
-
-    elif data == "edit_type":
-        await query.edit_message_text(
-            _format_card(row) + "\n\n*Select transaction type:*",
-            parse_mode="Markdown",
-            reply_markup=_type_keyboard(),
-        )
-
-    elif data == "set_type_expense":
-        row["type"] = "expense"
-        context.user_data["pending_txn"] = row
-        await query.edit_message_text(
-            _format_card(row) + "\n\n*Type updated! What else?*",
-            parse_mode="Markdown",
-            reply_markup=_edit_field_keyboard(),
-        )
-
-    elif data == "set_type_income":
-        row["type"] = "income"
-        context.user_data["pending_txn"] = row
-        await query.edit_message_text(
-            _format_card(row) + "\n\n*Type updated! What else?*",
-            parse_mode="Markdown",
-            reply_markup=_edit_field_keyboard(),
-        )
-
-    elif data == "edit_category":
-        await query.edit_message_text(
-            f"*Select a category ({row['type']}):*",
-            parse_mode="Markdown",
-            reply_markup=_category_keyboard(row["type"]),
-        )
-
-    elif data.startswith("set_cat_"):
-        row["category"] = data[len("set_cat_"):]
-        context.user_data["pending_txn"] = row
-        await query.edit_message_text(
-            _format_card(row) + "\n\n*Category updated! What else?*",
-            parse_mode="Markdown",
-            reply_markup=_edit_field_keyboard(),
-        )
-
-    elif data == "edit_amount":
-        context.user_data["edit_field"] = "amount"
-        await query.edit_message_text(
-            _format_card(row) + "\n\n✏️ *Send the new amount:*",
-            parse_mode="Markdown",
-        )
-
-    elif data == "edit_note":
-        context.user_data["edit_field"] = "note"
-        await query.edit_message_text(
-            _format_card(row) + "\n\n✏️ *Send the new note:*",
-            parse_mode="Markdown",
-        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -460,7 +265,7 @@ async def fix_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "💡 *Finance Bot — Help*\n\n"
-        "Just type any transaction naturally.\n\n"
+        "Just type any transaction naturally and it gets saved instantly.\n\n"
         "/recent — Last 10 entries\n"
         "/summary — Monthly summary\n"
         "/balance — Balance details\n"
@@ -476,61 +281,57 @@ async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Register handlers + build app
+# Register handlers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _register_handlers(app: Application):
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            WAITING_PASSWORD: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_password)
-            ],
-        },
-        fallbacks=[CommandHandler("start", start)],
-        per_message=False,
-    )
-    app.add_handler(conv)
-    app.add_handler(CommandHandler("logout",  logout))
-    app.add_handler(CommandHandler("recent",  recent))
-    app.add_handler(CommandHandler("summary", summary))
-    app.add_handler(CommandHandler("balance", balance))
-    app.add_handler(CommandHandler("fix",     fix_summary))
-    app.add_handler(CommandHandler("help",    help_command))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.COMMAND, unknown))
+conv = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        WAITING_PASSWORD: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_password)
+        ],
+    },
+    fallbacks=[CommandHandler("start", start)],
+    per_message=False,
+)
 
+ptb_app.add_handler(conv)
+ptb_app.add_handler(CommandHandler("logout",  logout))
+ptb_app.add_handler(CommandHandler("recent",  recent))
+ptb_app.add_handler(CommandHandler("summary", summary))
+ptb_app.add_handler(CommandHandler("balance", balance))
+ptb_app.add_handler(CommandHandler("fix",     fix_summary))
+ptb_app.add_handler(CommandHandler("help",    help_command))
+ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+ptb_app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Flask app — one fresh event loop per request (no shared loop issues)
+# Event loop — shared for webhook mode
+# ─────────────────────────────────────────────────────────────────────────────
+
+_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(_loop)
+_loop.run_until_complete(ptb_app.initialize())
+logger.info("PTB app initialised.")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Flask app
 # ─────────────────────────────────────────────────────────────────────────────
 
 flask_app = Flask(__name__)
 
-# Build and initialise the PTB app once at import time
-_ptb_app = _make_app()
-_register_handlers(_ptb_app)
-
-# Use ONE persistent event loop (but never share it across threads)
-_loop = asyncio.new_event_loop()
-asyncio.set_event_loop(_loop)
-_loop.run_until_complete(_ptb_app.initialize())
-logger.info("PTB app initialised.")
-
 
 @flask_app.get("/")
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "service": "telegram-finance-bot"})
 
 
 @flask_app.post("/webhook")
 def webhook():
     try:
         payload = request.get_json(force=True)
-        update  = Update.de_json(payload, _ptb_app.bot)
-        # process_update is the correct entry point — handles persistence flush too
-        _loop.run_until_complete(_ptb_app.process_update(update))
+        update  = Update.de_json(payload, ptb_app.bot)
+        _loop.run_until_complete(ptb_app.process_update(update))
     except Exception as e:
         logger.error(f"Webhook error: {e}", exc_info=True)
     return jsonify({"ok": True})
@@ -542,13 +343,13 @@ def set_webhook():
     if not url:
         return jsonify({"error": "WEBHOOK_URL not set"}), 400
     full = f"{url}/webhook"
-    _loop.run_until_complete(_ptb_app.bot.set_webhook(url=full))
+    _loop.run_until_complete(ptb_app.bot.set_webhook(url=full))
     return jsonify({"ok": True, "webhook_url": full})
 
 
 @flask_app.get("/delete_webhook")
 def delete_webhook():
-    _loop.run_until_complete(_ptb_app.bot.delete_webhook())
+    _loop.run_until_complete(ptb_app.bot.delete_webhook())
     return jsonify({"ok": True})
 
 
@@ -563,5 +364,5 @@ if __name__ == "__main__":
         flask_app.run(host="0.0.0.0", port=port)
     else:
         logger.info("Polling mode")
-        _loop.run_until_complete(_ptb_app.shutdown())
-        _ptb_app.run_polling(allowed_updates=Update.ALL_TYPES)
+        _loop.run_until_complete(ptb_app.shutdown())
+        ptb_app.run_polling(allowed_updates=Update.ALL_TYPES)
