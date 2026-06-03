@@ -225,24 +225,10 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("⏳ Calculating balance...")
     try:
-        data           = get_balance(user_id)
-        net_all        = data["net_balance"]
-        net_month      = data["month_net"]
-        net_all_icon   = "🟢" if net_all   >= 0 else "🔴"
-        net_month_icon = "🟢" if net_month >= 0 else "🔴"
-        msg = (
-            f"💰 *Balance — {data['month']}*\n\n"
-            f"📅 *This Month*\n"
-            f"  Income  : ₹{data['month_income']:,.2f}\n"
-            f"  Expense : ₹{data['month_expense']:,.2f}\n"
-            f"  {net_month_icon} Net : ₹{net_month:,.2f}\n\n"
-            f"📊 *All Time*\n"
-            f"  Income  : ₹{data['all_income']:,.2f}\n"
-            f"  Expense : ₹{data['all_expense']:,.2f}\n"
-            f"  {net_all_icon} Balance : ₹{net_all:,.2f}\n\n"
-            f"🏷️ *Top Spend This Month*\n"
-            f"  {data['top_category']} — ₹{data['top_cat_amount']:,.2f}"
-        )
+        data    = get_balance(user_id)
+        net_all = data["net_balance"]
+        icon    = "🟢" if net_all >= 0 else "🔴"
+        msg     = f"{icon} *Net Balance: ₹{net_all:,.2f}*"
         await update.message.reply_text(msg, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Balance error: {e}")
