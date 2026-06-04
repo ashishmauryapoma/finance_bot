@@ -127,7 +127,7 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if verify_password(entered):
         set_authenticated(user_id, True)
         await update.effective_chat.send_message(
-            "✅ *Access granted!* Welcome aboard.\n\n"
+            "✅ *Access granted!* Welcome Ashish.\n\n"
             "Send me any transaction in plain language — English or Hindi!",
             parse_mode="Markdown",
         )
