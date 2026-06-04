@@ -27,6 +27,10 @@ from sheets_handler import (
     append_transaction, get_recent_transactions,
     get_summary, get_balance, rebuild_summary,
 )
+from goals_handler import (
+    cmd_new_goal, cmd_deposit, cmd_goals,
+    cmd_goal_detail, cmd_delete_goal, cmd_all_goals,
+)
 from auth import verify_password, is_authenticated, set_authenticated
 from utils import format_summary, format_recent
 
@@ -99,6 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/recent — Last 10 transactions\n"
             "/summary — Monthly summary\n"
             "/balance — Balance details\n"
+            "/goals — Your savings goals\n"
             "/logout — Log out\n"
             "/help — Help",
             parse_mode="Markdown",
@@ -106,7 +111,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.message.reply_text(
-        f"🔒 This bot is password-protected.\n"
+        f"🔐 Welcome, *{name}*!\n\n"
+        "This bot is password-protected.\n"
         "Please enter the *password* to continue:",
         parse_mode="Markdown",
     )
@@ -117,21 +123,16 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     entered = update.message.text.strip()
 
-    # Always delete the password message to keep it out of chat history
-    try:
-        await update.message.delete()
-    except Exception:
-        pass  # silently ignore if bot lacks delete permission
-
     if verify_password(entered):
         set_authenticated(user_id, True)
-        await update.effective_chat.send_message(
-            "🔓 *Access granted!* Welcome Ashish.",
+        await update.message.reply_text(
+            "✅ *Access granted!* Welcome aboard.\n\n"
+            "Send me any transaction in plain language — English or Hindi!",
             parse_mode="Markdown",
         )
         return ConversationHandler.END
 
-    await update.effective_chat.send_message(
+    await update.message.reply_text(
         "❌ *Wrong password.* Please try again:",
         parse_mode="Markdown",
     )
@@ -147,7 +148,7 @@ async def logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Main message handler — parse and save immediately, no buttons
+# Main message handler
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -191,7 +192,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Command handlers
+# Transaction command handlers
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def recent(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -229,24 +230,10 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("⏳ Calculating balance...")
     try:
-        data           = get_balance(user_id)
-        net_all        = data["net_balance"]
-        net_month      = data["month_net"]
-        net_all_icon   = "🟢" if net_all   >= 0 else "🔴"
-        net_month_icon = "🟢" if net_month >= 0 else "🔴"
-        msg = (
-            f"💰 *Balance — {data['month']}*\n\n"
-            f"📅 *This Month*\n"
-            f"  Income  : ₹{data['month_income']:,.2f}\n"
-            f"  Expense : ₹{data['month_expense']:,.2f}\n"
-            f"  {net_month_icon} Net : ₹{net_month:,.2f}\n\n"
-            f"📊 *All Time*\n"
-            f"  Income  : ₹{data['all_income']:,.2f}\n"
-            f"  Expense : ₹{data['all_expense']:,.2f}\n"
-            f"  {net_all_icon} Balance : ₹{net_all:,.2f}\n\n"
-            f"🏷️ *Top Spend This Month*\n"
-            f"  {data['top_category']} — ₹{data['top_cat_amount']:,.2f}"
-        )
+        data    = get_balance(user_id)
+        net_all = data["net_balance"]
+        icon    = "🟢" if net_all >= 0 else "🔴"
+        msg     = f"{icon} *Net Balance: ₹{net_all:,.2f}*"
         await update.message.reply_text(msg, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Balance error: {e}")
@@ -266,14 +253,207 @@ async def fix_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Failed: {e}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Goals command handlers
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def goals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all active goals: /goals"""
+    user_id  = str(update.effective_user.id)
+    username = update.effective_user.username or update.effective_user.first_name or "Unknown"
+    if not is_authenticated(user_id):
+        await update.message.reply_text("🔐 Please /start first.")
+        return
+    try:
+        msg = cmd_goals(username)
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Goals error: {e}")
+        await update.message.reply_text("⚠️ Could not fetch goals.")
+
+
+async def all_goals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all goals including completed/cancelled: /allgoals"""
+    user_id  = str(update.effective_user.id)
+    username = update.effective_user.username or update.effective_user.first_name or "Unknown"
+    if not is_authenticated(user_id):
+        await update.message.reply_text("🔐 Please /start first.")
+        return
+    try:
+        msg = cmd_all_goals(username)
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"All goals error: {e}")
+        await update.message.reply_text("⚠️ Could not fetch goals.")
+
+
+async def new_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Create a new savings goal.
+    Usage: /newgoal <Name> | <Target> | <DD-MM-YYYY>
+    Example: /newgoal Trip to Goa | 50000 | 01-12-2026
+    """
+    user_id  = str(update.effective_user.id)
+    username = update.effective_user.username or update.effective_user.first_name or "Unknown"
+    if not is_authenticated(user_id):
+        await update.message.reply_text("🔐 Please /start first.")
+        return
+
+    usage = (
+        "📌 *Usage:* `/newgoal Name | Target | DD-MM-YYYY`\n\n"
+        "Example:\n`/newgoal Trip to Goa | 50000 | 01-12-2026`"
+    )
+
+    if not context.args:
+        await update.message.reply_text(usage, parse_mode="Markdown")
+        return
+
+    raw = " ".join(context.args)
+    parts = [p.strip() for p in raw.split("|")]
+
+    if len(parts) != 3:
+        await update.message.reply_text(
+            "❌ Wrong format. Use `|` to separate fields.\n\n" + usage,
+            parse_mode="Markdown",
+        )
+        return
+
+    name_str, target_str, deadline_str = parts
+
+    try:
+        target = float(target_str.replace(",", "").replace("₹", "").strip())
+    except ValueError:
+        await update.message.reply_text("❌ Invalid target amount.", parse_mode="Markdown")
+        return
+
+    try:
+        datetime.strptime(deadline_str, "%d-%m-%Y")
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid date format. Use DD-MM-YYYY (e.g. 01-12-2026)",
+            parse_mode="Markdown",
+        )
+        return
+
+    try:
+        msg = cmd_new_goal(name_str, target, deadline_str, username)
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"New goal error: {e}")
+        await update.message.reply_text(f"⚠️ Failed to create goal: {e}")
+
+
+async def deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Add money to a goal.
+    Usage: /deposit <GoalID> <Amount>
+    Example: /deposit A1B2C3D4 5000
+    """
+    user_id = str(update.effective_user.id)
+    if not is_authenticated(user_id):
+        await update.message.reply_text("🔐 Please /start first.")
+        return
+
+    usage = "📌 *Usage:* `/deposit <GoalID> <Amount>`\n\nExample: `/deposit A1B2C3D4 5000`"
+
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(usage, parse_mode="Markdown")
+        return
+
+    goal_id    = context.args[0].strip().upper()
+    amount_str = context.args[1].strip().replace(",", "").replace("₹", "")
+
+    try:
+        amount = float(amount_str)
+    except ValueError:
+        await update.message.reply_text("❌ Invalid amount.", parse_mode="Markdown")
+        return
+
+    if amount <= 0:
+        await update.message.reply_text("❌ Amount must be positive.")
+        return
+
+    try:
+        msg = cmd_deposit(goal_id, amount)
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except ValueError as e:
+        await update.message.reply_text(f"❌ {e}")
+    except Exception as e:
+        logger.error(f"Deposit error: {e}")
+        await update.message.reply_text("⚠️ Failed to deposit. Try again.")
+
+
+async def goal_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Show full card for a single goal.
+    Usage: /goal <GoalID>
+    """
+    user_id = str(update.effective_user.id)
+    if not is_authenticated(user_id):
+        await update.message.reply_text("🔐 Please /start first.")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "📌 *Usage:* `/goal <GoalID>`", parse_mode="Markdown"
+        )
+        return
+
+    goal_id = context.args[0].strip().upper()
+    try:
+        msg = cmd_goal_detail(goal_id)
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Goal detail error: {e}")
+        await update.message.reply_text("⚠️ Failed to fetch goal.")
+
+
+async def cancel_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Cancel (soft-delete) a goal.
+    Usage: /cancelgoal <GoalID>
+    """
+    user_id = str(update.effective_user.id)
+    if not is_authenticated(user_id):
+        await update.message.reply_text("🔐 Please /start first.")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "📌 *Usage:* `/cancelgoal <GoalID>`", parse_mode="Markdown"
+        )
+        return
+
+    goal_id = context.args[0].strip().upper()
+    try:
+        msg = cmd_delete_goal(goal_id)
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Cancel goal error: {e}")
+        await update.message.reply_text("⚠️ Failed to cancel goal.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Help & unknown
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "💡 *Finance Bot — Help*\n\n"
         "Just type any transaction naturally and it gets saved instantly.\n\n"
+        "📊 *Transactions*\n"
         "/recent — Last 10 entries\n"
         "/summary — Monthly summary\n"
         "/balance — Balance details\n"
-        "/fix — Rebuild summary sheet\n"
+        "/fix — Rebuild summary sheet\n\n"
+        "🎯 *Savings Goals*\n"
+        "/goals — View active goals\n"
+        "/allgoals — All goals (incl. completed)\n"
+        "/newgoal Name | Target | DD-MM-YYYY — Create goal\n"
+        "/goal <ID> — Goal details\n"
+        "/deposit <ID> <Amount> — Add savings\n"
+        "/cancelgoal <ID> — Cancel a goal\n\n"
+        "⚙️ *Account*\n"
         "/logout — Log out\n"
         "/help — This message",
         parse_mode="Markdown",
@@ -300,12 +480,24 @@ conv = ConversationHandler(
 )
 
 ptb_app.add_handler(conv)
-ptb_app.add_handler(CommandHandler("logout",  logout))
-ptb_app.add_handler(CommandHandler("recent",  recent))
-ptb_app.add_handler(CommandHandler("summary", summary))
-ptb_app.add_handler(CommandHandler("balance", balance))
-ptb_app.add_handler(CommandHandler("fix",     fix_summary))
-ptb_app.add_handler(CommandHandler("help",    help_command))
+
+# Transactions
+ptb_app.add_handler(CommandHandler("logout",   logout))
+ptb_app.add_handler(CommandHandler("recent",   recent))
+ptb_app.add_handler(CommandHandler("summary",  summary))
+ptb_app.add_handler(CommandHandler("balance",  balance))
+ptb_app.add_handler(CommandHandler("fix",      fix_summary))
+
+# Goals
+ptb_app.add_handler(CommandHandler("goals",      goals))
+ptb_app.add_handler(CommandHandler("allgoals",   all_goals))
+ptb_app.add_handler(CommandHandler("newgoal",    new_goal))
+ptb_app.add_handler(CommandHandler("goal",       goal_detail))
+ptb_app.add_handler(CommandHandler("deposit",    deposit))
+ptb_app.add_handler(CommandHandler("cancelgoal", cancel_goal))
+
+# Catch-all
+ptb_app.add_handler(CommandHandler("help",     help_command))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 ptb_app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
