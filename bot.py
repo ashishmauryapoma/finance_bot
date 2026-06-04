@@ -9,6 +9,7 @@ import os
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from flask import Flask, request, jsonify
 from telegram import Update
@@ -266,6 +267,39 @@ async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❓ Unknown command. Use /help.")
 
 
+async def send_daily_balance_reminder():
+    """Sends balance reminder to all authenticated users at 8 PM IST."""
+    from auth import get_all_authenticated_user_ids  # import here to avoid circular imports
+    try:
+        user_ids = get_all_authenticated_user_ids()
+        if not user_ids:
+            logger.info("Daily reminder: no authenticated users to notify.")
+            return
+
+        for user_id in user_ids:
+            try:
+                data    = get_balance(user_id)  # reuse existing function
+                net_all = data["net_balance"]
+                icon    = "🟢" if net_all >= 0 else "🔴"
+                msg = (
+                    f"🕗 *Daily Balance Reminder*\n"
+                    f"{'─' * 28}\n"
+                    f"{icon} *Net Balance: ₹{net_all:,.2f}*\n"
+                    f"{'─' * 28}\n"
+                    f"_Have a great evening! 💫_"
+                )
+                await ptb_app.bot.send_message(
+                    chat_id=user_id,
+                    text=msg,
+                    parse_mode="Markdown",
+                )
+                logger.info(f"Daily reminder sent to user {user_id}")
+            except Exception as e:
+                logger.error(f"Failed to send reminder to {user_id}: {e}")
+    except Exception as e:
+        logger.error(f"Daily reminder job error: {e}", exc_info=True)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Register handlers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -299,6 +333,21 @@ _loop = asyncio.new_event_loop()
 asyncio.set_event_loop(_loop)
 _loop.run_until_complete(ptb_app.initialize())
 logger.info("PTB app initialised.")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Daily 8 PM IST balance reminder scheduler
+# ─────────────────────────────────────────────────────────────────────────────
+
+_scheduler = AsyncIOScheduler(event_loop=_loop, timezone=_IST)
+_scheduler.add_job(
+    send_daily_balance_reminder,
+    trigger="cron",
+    hour=20,
+    minute=0,
+    id="daily_balance_reminder",
+)
+_scheduler.start()
+logger.info("Scheduler started — daily balance reminder at 20:00 IST.")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Flask app
