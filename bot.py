@@ -106,8 +106,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.message.reply_text(
-        f"🔐 Welcome, *{name}*!\n\n"
-        "This bot is password-protected.\n"
+        f"🔒 This bot is password-protected.\n"
         "Please enter the *password* to continue:",
         parse_mode="Markdown",
     )
@@ -127,7 +126,7 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if verify_password(entered):
         set_authenticated(user_id, True)
         await update.effective_chat.send_message(
-            "✅ *Access granted!* Welcome Ashish.",
+            "🔓 *Access granted!* Welcome Ashish.",
             parse_mode="Markdown",
         )
         return ConversationHandler.END
