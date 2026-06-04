@@ -30,7 +30,7 @@ def _days_left(deadline_str: str) -> int:
     return max(0, (deadline - now).days)
 
 
-def _progress_bar(pct: float, width: int = 10) -> str:
+def _progress_bar(pct: float, width: int = 14) -> str:
     filled = math.floor(pct / 100 * width)
     return "█" * filled + "░" * (width - filled)
 
