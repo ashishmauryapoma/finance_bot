@@ -343,7 +343,7 @@ _scheduler.add_job(
     send_daily_balance_reminder,
     trigger="cron",
     hour=20,
-    minute=0,
+    minute=20,
     id="daily_balance_reminder",
 )
 _scheduler.start()
