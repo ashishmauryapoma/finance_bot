@@ -118,16 +118,22 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     entered = update.message.text.strip()
 
+    # Always delete the password message to keep it out of chat history
+    try:
+        await update.message.delete()
+    except Exception:
+        pass  # silently ignore if bot lacks delete permission
+
     if verify_password(entered):
         set_authenticated(user_id, True)
-        await update.message.reply_text(
+        await update.effective_chat.send_message(
             "✅ *Access granted!* Welcome aboard.\n\n"
             "Send me any transaction in plain language — English or Hindi!",
             parse_mode="Markdown",
         )
         return ConversationHandler.END
 
-    await update.message.reply_text(
+    await update.effective_chat.send_message(
         "❌ *Wrong password.* Please try again:",
         parse_mode="Markdown",
     )
