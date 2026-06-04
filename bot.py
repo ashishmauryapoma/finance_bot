@@ -9,7 +9,7 @@ import os
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from flask import Flask, request, jsonify
 from telegram import Update
@@ -267,9 +267,22 @@ async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❓ Unknown command. Use /help.")
 
 
-async def send_daily_balance_reminder():
-    """Sends balance reminder to all authenticated users at 8 PM IST."""
-    from auth import get_all_authenticated_user_ids  # import here to avoid circular imports
+def send_daily_balance_reminder():
+    """
+    Sync wrapper called by BackgroundScheduler (runs in a thread).
+    Submits the async work onto _loop via run_coroutine_threadsafe so it
+    shares the same bot session that handles webhooks/polling.
+    """
+    future = asyncio.run_coroutine_threadsafe(_reminder_coro(), _loop)
+    try:
+        future.result(timeout=30)          # wait up to 30 s
+    except Exception as e:
+        logger.error(f"Daily reminder future error: {e}", exc_info=True)
+
+
+async def _reminder_coro():
+    """Actual async logic — fetches balances and sends messages."""
+    from auth import get_all_authenticated_user_ids
     try:
         user_ids = get_all_authenticated_user_ids()
         if not user_ids:
@@ -278,7 +291,7 @@ async def send_daily_balance_reminder():
 
         for user_id in user_ids:
             try:
-                data    = get_balance(user_id)  # reuse existing function
+                data    = get_balance(user_id)
                 net_all = data["net_balance"]
                 icon    = "🟢" if net_all >= 0 else "🔴"
                 msg = (
@@ -295,7 +308,7 @@ async def send_daily_balance_reminder():
                 )
                 logger.info(f"Daily reminder sent to user {user_id}")
             except Exception as e:
-                logger.error(f"Failed to send reminder to {user_id}: {e}")
+                logger.error(f"Failed to send reminder to {user_id}: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"Daily reminder job error: {e}", exc_info=True)
 
@@ -338,12 +351,12 @@ logger.info("PTB app initialised.")
 # Daily 8 PM IST balance reminder scheduler
 # ─────────────────────────────────────────────────────────────────────────────
 
-_scheduler = AsyncIOScheduler(event_loop=_loop, timezone=_IST)
+_scheduler = BackgroundScheduler(timezone=_IST)
 _scheduler.add_job(
-    send_daily_balance_reminder,
+    send_daily_balance_reminder,      # plain sync function now
     trigger="cron",
     hour=20,
-    minute=20,
+    minute=30,
     id="daily_balance_reminder",
 )
 _scheduler.start()
