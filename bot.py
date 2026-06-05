@@ -22,7 +22,7 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 
-from groq_handler import extract_transaction
+from groq_handler import extract_transaction, detect_goal_deposit
 from sheets_handler import (
     append_transaction, get_recent_transactions,
     get_summary, get_balance, rebuild_summary,
@@ -168,6 +168,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_chat_action("typing")
 
     try:
+        # ── Step 1: Check if message is a goal deposit ────────────────────────
+        active_goal = get_goal()
+        if active_goal:
+            goal_check = await detect_goal_deposit(text)
+            if goal_check and goal_check.get("is_goal_deposit") and goal_check.get("amount"):
+                amount = float(goal_check["amount"])
+                goal, just_completed = add_to_goal(amount, username)
+
+                if just_completed:
+                    saved = float(goal.get("Saved", 0))
+                    await update.message.reply_text(
+                        f"🎯 *Goal deposit saved!* ₹{amount:,.2f} logged.\n\n"
+                        f"{format_goal_complete(goal)}\n\n"
+                        f"💡 ₹{saved:,.2f} auto-added to your income as *Goal Achieved*.",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"🎯 *Goal deposit saved!* ₹{amount:,.2f} logged.\n\n"
+                        f"{format_goal_card(goal)}",
+                        parse_mode="Markdown",
+                    )
+                return  # done — don't process as a normal transaction
+
+        # ── Step 2: Normal transaction parsing ────────────────────────────────
         transaction = await extract_transaction(text)
 
         if not transaction:
@@ -361,6 +386,7 @@ async def _goal_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /goal add <amount>
     Add money toward the active goal.
+    Logs the deposit as a transaction and auto-books income on completion.
     """
     if len(context.args) < 2:
         await update.message.reply_text(
@@ -383,9 +409,16 @@ async def _goal_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Amount must be greater than zero.")
         return
 
+    username = (
+        update.effective_user.username
+        or update.effective_user.first_name
+        or "goal"
+    )
+
     try:
-        goal = add_to_goal(amount)
-        if not goal:
+        goal, just_completed = add_to_goal(amount, username)
+
+        if goal is None:
             await update.message.reply_text(
                 "🎯 No active goal. Create one with `/goal set`.",
                 parse_mode="Markdown",
@@ -395,14 +428,17 @@ async def _goal_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saved  = float(goal.get("Saved", 0))
         target = float(goal.get("Target", 0))
 
-        if saved >= target:
+        if just_completed:
             await update.message.reply_text(
-                f"➕ Added ₹{amount:,.2f}\n\n{format_goal_complete(goal)}",
+                f"➕ *₹{amount:,.2f} deposited & logged*\n\n"
+                f"{format_goal_complete(goal)}\n\n"
+                f"💡 ₹{saved:,.2f} auto-added to your income as *Goal Achieved*.",
                 parse_mode="Markdown",
             )
         else:
             await update.message.reply_text(
-                f"➕ Added ₹{amount:,.2f}\n\n{format_goal_card(goal)}",
+                f"➕ *₹{amount:,.2f} deposited & logged*\n\n"
+                f"{format_goal_card(goal)}",
                 parse_mode="Markdown",
             )
     except Exception as e:
