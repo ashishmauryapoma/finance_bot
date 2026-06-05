@@ -203,6 +203,63 @@ def _validate_category(txn_type: str, category: str) -> str:
 # Public function
 # ─────────────────────────────────────────────────────────────────────────────
 
+GOAL_DETECT_PROMPT = """You are a financial assistant. The user will send a message in English or Hindi (or a mix).
+
+Your job: Decide if the message is about saving money toward a goal (like "saved 2000 for trip", "goal mein 500 daala", "putting 1000 aside for goa").
+
+If YES — return JSON with the amount saved. Example:
+{"is_goal_deposit": true, "amount": 2000}
+
+If NO (it's a regular expense/income, or unrelated) — return:
+{"is_goal_deposit": false, "amount": null}
+
+Rules:
+- Amount must be a plain number. No symbols.
+- If no amount is mentioned, return null for amount.
+- Respond ONLY with valid JSON. No markdown, no explanation.
+"""
+
+
+async def detect_goal_deposit(text: str) -> dict | None:
+    """
+    Check if the message is a goal saving intent.
+    Returns {"is_goal_deposit": True, "amount": float} or
+            {"is_goal_deposit": False, "amount": None}
+    Returns None on API error.
+    """
+    client = _get_client()
+
+    try:
+        response = await client.chat.completions.create(
+            model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+            messages=[
+                {"role": "system", "content": GOAL_DETECT_PROMPT},
+                {"role": "user",   "content": text},
+            ],
+            temperature=0.1,
+            max_tokens=60,
+        )
+
+        raw = response.choices[0].message.content.strip()
+        logger.debug(f"Groq goal detect response: {raw}")
+
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+
+        data = json.loads(raw)
+        return data
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Goal detect JSON parse error: {e} | raw: {raw!r}")
+        return None
+    except Exception as e:
+        logger.error(f"Goal detect API error: {e}")
+        return None
+
+
 async def extract_transaction(text: str) -> dict | None:
     """
     Parse a natural-language transaction message.
