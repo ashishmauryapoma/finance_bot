@@ -35,14 +35,10 @@ ROW_ALT_BG       = {"red": 0.906, "green": 0.925, "blue": 0.969}   # light blue-
 ROW_NORMAL_BG    = {"red": 1.0,   "green": 1.0,   "blue": 1.0}     # white
 INCOME_FG        = {"red": 0.106, "green": 0.533, "blue": 0.196}   # green
 EXPENSE_FG       = {"red": 0.741, "green": 0.149, "blue": 0.133}   # red
-SUMMARY_HDR_BG   = {"red": 0.204, "green": 0.659, "blue": 0.325}   # green
-SUMMARY_HDR_FG   = {"red": 1.0,   "green": 1.0,   "blue": 1.0}
-TOTAL_BG         = {"red": 0.988, "green": 0.914, "blue": 0.698}   # soft yellow
 
 _client      = None
 _spreadsheet = None
 _txn_sheet   = None
-_sum_sheet   = None
 _goal_sheet  = None
 
 
@@ -268,208 +264,7 @@ def _style_new_row(ws, row_index: int, row_type: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Summary sheet
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _get_sum_sheet():
-    global _sum_sheet
-    if _sum_sheet:
-        return _sum_sheet
-    _sum_sheet = _get_or_create("Summary", rows=100, cols=10)
-    return _sum_sheet
-
-
-def _rebuild_summary_sheet():
-    """
-    Wipe the Summary sheet and rewrite a fully styled summary table
-    for the current month based on all transactions.
-    """
-    ws  = _get_sum_sheet()
-    ss  = _connect()
-    sid = ws.id
-
-    # ── Gather data ──────────────────────────────────────────────────────────
-    txn_ws      = _get_txn_sheet()
-    all_values  = txn_ws.get_all_values()   # safer than get_all_records
-    cur_month   = datetime.now(_IST).strftime("%m-%Y")   # e.g. "05-2026"
-    month_label = datetime.now(_IST).strftime("%B %Y")
-
-    total_income  = 0.0
-    total_expense = 0.0
-    by_category   = defaultdict(float)
-    income_cats   = defaultdict(float)
-
-    if len(all_values) >= 2:
-        # Detect column positions from header row (robust to any order)
-        header = [h.strip().lower() for h in all_values[0]]
-        try:
-            i_date = header.index("date")
-            i_type = header.index("type")
-            i_cat  = header.index("category")
-            i_amt  = header.index("amount")
-        except ValueError as e:
-            logger.error(f"Header column not found: {e}  headers={all_values[0]}")
-            i_date, i_type, i_cat, i_amt = 0, 2, 3, 4
-
-        for row in all_values[1:]:
-            if len(row) <= i_amt:
-                continue   # short/empty row
-            date_str = row[i_date].strip()
-            # date format dd-mm-yyyy: positions [3:] give "mm-yyyy"
-            if len(date_str) < 7 or date_str[3:] != cur_month:
-                continue
-            try:
-                amt = float(row[i_amt])
-            except (ValueError, TypeError):
-                continue
-            t   = row[i_type].strip().lower()
-            cat = row[i_cat].strip() or "Other"
-            if t == "income":
-                total_income += amt
-                income_cats[cat] += amt
-            else:
-                total_expense += amt
-                by_category[cat] += amt
-
-    net = total_income - total_expense
-
-    # ── Build cell data ──────────────────────────────────────────────────────
-    data = []
-
-    # Title
-    data.append([f"📊 Finance Summary — {month_label}", "", ""])
-
-    # Spacer
-    data.append(["", "", ""])
-
-    # ── Expenses table ───────────────────────────────────────────────────────
-    data.append(["💸 EXPENSES BY CATEGORY", "", ""])
-    data.append(["Category", "Amount (₹)", "% of Total"])
-
-    exp_start_row = len(data) + 1   # 1-based
-    for cat, amt in sorted(by_category.items(), key=lambda x: x[1], reverse=True):
-        if amt <= 0:
-            continue   # skip zero-amount categories
-        pct = f"{(amt / total_expense * 100):.1f}%" if total_expense else "0%"
-        data.append([cat, round(amt, 2), pct])
-
-    data.append(["TOTAL EXPENSES", round(total_expense, 2), "100%"])
-    exp_end_row = len(data)
-
-    # Spacer
-    data.append(["", "", ""])
-
-    # ── Income table ─────────────────────────────────────────────────────────
-    data.append(["📥 INCOME BY CATEGORY", "", ""])
-    data.append(["Category", "Amount (₹)", "% of Total"])
-
-    inc_start_row = len(data) + 1
-    for cat, amt in sorted(income_cats.items(), key=lambda x: x[1], reverse=True):
-        if amt <= 0:
-            continue   # skip zero-amount categories
-        pct = f"{(amt / total_income * 100):.1f}%" if total_income else "0%"
-        data.append([cat, round(amt, 2), pct])
-
-    data.append(["TOTAL INCOME", round(total_income, 2), "100%"])
-    inc_end_row = len(data)
-
-    # Spacer
-    data.append(["", "", ""])
-
-    # ── Net summary ──────────────────────────────────────────────────────────
-    data.append(["💰 NET SUMMARY", "", ""])
-    data.append(["Total Income",  round(total_income, 2),  ""])
-    data.append(["Total Expense", round(total_expense, 2), ""])
-    net_row = len(data) + 1
-    data.append(["Net Balance",   round(net, 2),  "Surplus" if net >= 0 else "Deficit"])
-
-    # ── Write to sheet ───────────────────────────────────────────────────────
-    ws.clear()
-    ws.update("A1", data, value_input_option="RAW")
-
-    # ── Batch format ─────────────────────────────────────────────────────────
-    total_rows = len(data)
-    requests   = []
-
-    # Column widths
-    requests += [
-        _col_width_request(sid, 0, 200),
-        _col_width_request(sid, 1, 140),
-        _col_width_request(sid, 2, 110),
-    ]
-
-    def _rng(r1, r2, c1, c2):
-        return {"sheetId": sid, "startRowIndex": r1 - 1, "endRowIndex": r2,
-                "startColumnIndex": c1, "endColumnIndex": c2}
-
-    def _fmt_req(r1, r2, c1, c2, **kw):
-        return {
-            "repeatCell": {
-                "range": _rng(r1, r2, c1, c2),
-                "cell": {"userEnteredFormat": {
-                    **_cell_fmt(**kw),
-                    "borders": _full_border(),
-                }},
-                "fields": "userEnteredFormat",
-            }
-        }
-
-    # Title row
-    requests.append({
-        "mergeCells": {
-            "range": _rng(1, 1, 0, 3),
-            "mergeType": "MERGE_ALL",
-        }
-    })
-    requests.append(_fmt_req(1, 1, 0, 3,
-                             bg=HEADER_BG, fg=HEADER_FG,
-                             bold=True, h_align="CENTER", font_size=13))
-    requests.append(_row_height_request(sid, 0, 1, 38))
-
-    # Section headers (Expenses / Income / Net)
-    for label_row in [3, len(by_category) + 6, len(by_category) + len(income_cats) + 10]:
-        if label_row <= total_rows:
-            requests.append({
-                "mergeCells": {
-                    "range": _rng(label_row, label_row, 0, 3),
-                    "mergeType": "MERGE_ALL",
-                }
-            })
-            requests.append(_fmt_req(label_row, label_row, 0, 3,
-                                     bg=SUMMARY_HDR_BG, fg=SUMMARY_HDR_FG,
-                                     bold=True, h_align="LEFT", font_size=11))
-
-    # Table column headers (Category / Amount / %)
-    for hdr_row in [4, len(by_category) + 7]:
-        if hdr_row <= total_rows:
-            requests.append(_fmt_req(hdr_row, hdr_row, 0, 3,
-                                     bg={"red": 0.85, "green": 0.92, "blue": 0.83},
-                                     bold=True, h_align="CENTER"))
-
-    # TOTAL rows — yellow background, bold
-    for tot_row in [exp_end_row, inc_end_row, net_row]:
-        if tot_row <= total_rows:
-            requests.append(_fmt_req(tot_row, tot_row, 0, 3,
-                                     bg=TOTAL_BG, bold=True, h_align="LEFT"))
-
-    # Amount column right-align for all data rows
-    requests.append({
-        "repeatCell": {
-            "range": _rng(1, total_rows, 1, 2),
-            "cell": {"userEnteredFormat": {"horizontalAlignment": "RIGHT"}},
-            "fields": "userEnteredFormat.horizontalAlignment",
-        }
-    })
-
-    # Freeze title row
-    requests.append(_freeze_request(sid, rows=1))
-
-    ss.batch_update({"requests": requests})
-    logger.info("Summary sheet rebuilt and styled")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Public API
+# Goals sheet
 # ─────────────────────────────────────────────────────────────────────────────
 
 def append_transaction(row: dict):
@@ -625,9 +420,8 @@ def get_balance(user_id: str = None) -> dict:
         "top_cat_amount": top_cat_amt,
     }
 
-def rebuild_summary():
-    """Public wrapper — force a full summary sheet rebuild."""
-    _rebuild_summary_sheet()
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -831,10 +625,32 @@ def add_to_goal(amount: float, username: str = "goal") -> tuple[dict | None, boo
     return get_goal(), just_completed
 
 
-def delete_goal() -> bool:
-    """Clear the current goal row, effectively removing it."""
+def delete_goal(username: str = "goal") -> bool:
+    """
+    Clear the current goal row.
+    If any amount was already saved, log it as income so the deposited
+    money flows back into the user's net balance.
+    """
     global _goal_sheet
-    ws = _get_goal_sheet()
+    ws   = _get_goal_sheet()
+    goal = get_goal()
+
+    if goal:
+        saved     = float(goal.get("Saved", 0))
+        goal_name = goal.get("Name", "Goal")
+        if saved > 0:
+            now_ist = datetime.now(_IST)
+            refund_row = {
+                "date":      now_ist.strftime("%d-%m-%Y"),
+                "timestamp": now_ist.strftime("%I:%M:%S %p"),
+                "type":      "income",
+                "category":  "Goal Refund",
+                "amount":    round(saved, 2),
+                "note":      f"Goal deleted: {goal_name} (deposited amount refunded)",
+                "user":      username,
+            }
+            append_transaction(refund_row)
+
     ws.update("A2:F2", [["", "", "", "", "", ""]], value_input_option="RAW")
     _goal_sheet = None
     return True
