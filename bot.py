@@ -175,7 +175,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 goal, just_completed = add_to_goal(amount, username)
 
                 if just_completed:
-                    saved = float(goal.get("Saved", 0))
+                    saved  = float(goal.get("Saved", 0))
                     await update.message.reply_text(
                         f"🎯 *Goal deposit saved!* ₹{amount:,.2f} logged.\n\n"
                         f"{format_goal_complete(goal)}\n\n"
@@ -492,7 +492,8 @@ async def _goal_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if goal is None:
             await update.message.reply_text(
-                "🎯 No active goal. Create one with `/goal set`.",
+                "🎯 No active goal or goal is already completed.\n"
+                "Create a new one with `/goal set`.",
                 parse_mode="Markdown",
             )
             return
@@ -502,7 +503,7 @@ async def _goal_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if just_completed:
             await update.message.reply_text(
-                f"➕ *₹{amount:,.2f} deposited & logged*\n\n"
+                f"➕ *Deposit logged*\n\n"
                 f"{format_goal_complete(goal)}\n\n"
                 f"💡 ₹{saved:,.2f} auto-added to your income as *Goal Achieved*.",
                 parse_mode="Markdown",
@@ -672,4 +673,3 @@ if __name__ == "__main__":
         logger.info("Polling mode")
         _loop.run_until_complete(ptb_app.shutdown())
         ptb_app.run_polling(allowed_updates=Update.ALL_TYPES)
-
