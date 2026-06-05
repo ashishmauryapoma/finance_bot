@@ -769,27 +769,66 @@ def create_goal(name: str, target: float, deadline: str = "") -> dict:
     return get_goal()
 
 
-def add_to_goal(amount: float) -> dict | None:
+def add_to_goal(amount: float, username: str = "goal") -> tuple[dict | None, bool]:
     """
     Add amount to the current goal's Saved total.
-    Marks goal as 'completed' if target is reached.
-    Returns updated goal dict, or None if no active goal.
+
+    - Logs every deposit as a 'Goal Saving' expense transaction so the
+      money trail is visible in the Transactions sheet.
+    - When the goal is fully funded, auto-logs the entire saved amount
+      as an Income transaction ('Goal Achieved') so it flows into
+      /balance and /summary automatically.
+
+    Returns (updated_goal_dict, just_completed).
+    Returns (None, False) if no active goal exists.
     """
     global _goal_sheet
     ws   = _get_goal_sheet()
     goal = get_goal()
     if not goal:
-        return None
+        return None, False
 
-    new_saved = round(float(goal.get("Saved", 0)) + amount, 2)
+    goal_name = goal.get("Name", "Goal")
+    prev_saved = float(goal.get("Saved", 0))
+    target     = float(goal.get("Target", 0))
+    new_saved  = round(prev_saved + amount, 2)
+
+    # ── 1. Update the Goals sheet ────────────────────────────────────────────
     ws.update("C2", [[new_saved]], value_input_option="RAW")
 
-    target = float(goal.get("Target", 0))
-    if new_saved >= target:
+    just_completed = (prev_saved < target) and (new_saved >= target)
+    if just_completed:
         ws.update("F2", [["completed"]], value_input_option="RAW")
 
     _goal_sheet = None  # invalidate cache
-    return get_goal()
+
+    # ── 2. Log deposit as a transaction (Goal Saving) ────────────────────────
+    now_ist = datetime.now(_IST)
+    deposit_row = {
+        "date":      now_ist.strftime("%d-%m-%Y"),
+        "timestamp": now_ist.strftime("%I:%M:%S %p"),
+        "type":      "expense",
+        "category":  "Goal Saving",
+        "amount":    round(amount, 2),
+        "note":      f"Saved toward: {goal_name}",
+        "user":      username,
+    }
+    append_transaction(deposit_row)
+
+    # ── 3. On completion, log full saved amount as income ────────────────────
+    if just_completed:
+        income_row = {
+            "date":      now_ist.strftime("%d-%m-%Y"),
+            "timestamp": now_ist.strftime("%I:%M:%S %p"),
+            "type":      "income",
+            "category":  "Goal Achieved",
+            "amount":    round(new_saved, 2),
+            "note":      f"Goal completed: {goal_name}",
+            "user":      username,
+        }
+        append_transaction(income_row)
+
+    return get_goal(), just_completed
 
 
 def delete_goal() -> bool:
