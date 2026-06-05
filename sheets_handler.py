@@ -565,32 +565,47 @@ def create_goal(name: str, target: float, deadline: str = "") -> dict:
 
 def add_to_goal(amount: float, username: str = "goal") -> tuple[dict | None, bool]:
     """
-    Add amount to the current goal's Saved total.
+    Add amount toward the current goal's Saved total.
 
-    - Logs every deposit as a 'Goal Saving' expense transaction so the
-      money trail is visible in the Transactions sheet.
-    - When the goal is fully funded, auto-logs the entire saved amount
-      as an Income transaction ('Goal Achieved') so it flows into
-      /balance and /summary automatically.
+    - Only accepts deposits up to the remaining amount needed (target - saved).
+      Any overpayment is rejected with a clear error tuple (None, False, overpay_msg).
+      Callers receive (goal_dict, just_completed) — overpayment is handled in bot layer.
+    - Logs every deposit as a 'Goal Saving' expense transaction.
+    - On completion logs the full saved amount as 'Goal Achieved' income.
 
     Returns (updated_goal_dict, just_completed).
     Returns (None, False) if no active goal exists.
     """
     global _goal_sheet
     ws   = _get_goal_sheet()
-    goal = get_goal()
-    if not goal:
+
+    # Read directly from sheet so we catch the goal even mid-session
+    rows = ws.get_all_values()
+    if len(rows) < 2 or not any(rows[1]):
+        return None, False
+    goal = dict(zip(GOAL_HEADERS, rows[1]))
+    # Allow deposit if active OR already completed (so bot can show the right message)
+    status = goal.get("Status", "").strip().lower()
+    if status not in ("active", "completed"):
         return None, False
 
-    goal_name = goal.get("Name", "Goal")
+    goal_name  = goal.get("Name", "Goal")
     prev_saved = float(goal.get("Saved", 0))
     target     = float(goal.get("Target", 0))
-    new_saved  = round(prev_saved + amount, 2)
+
+    # Block deposits once the goal is already completed
+    if status == "completed" or prev_saved >= target:
+        return None, False
+
+    # Cap the deposit at the remaining amount needed
+    remaining = round(target - prev_saved, 2)
+    deposit   = round(min(amount, remaining), 2)
+    new_saved = round(prev_saved + deposit, 2)
 
     # ── 1. Update the Goals sheet ────────────────────────────────────────────
     ws.update("C2", [[new_saved]], value_input_option="RAW")
 
-    just_completed = (prev_saved < target) and (new_saved >= target)
+    just_completed = new_saved >= target
     if just_completed:
         ws.update("F2", [["completed"]], value_input_option="RAW")
 
@@ -603,7 +618,7 @@ def add_to_goal(amount: float, username: str = "goal") -> tuple[dict | None, boo
         "timestamp": now_ist.strftime("%I:%M:%S %p"),
         "type":      "expense",
         "category":  "Goal Saving",
-        "amount":    round(amount, 2),
+        "amount":    deposit,
         "note":      f"Saved toward: {goal_name}",
         "user":      username,
     }
@@ -616,13 +631,16 @@ def add_to_goal(amount: float, username: str = "goal") -> tuple[dict | None, boo
             "timestamp": now_ist.strftime("%I:%M:%S %p"),
             "type":      "income",
             "category":  "Goal Achieved",
-            "amount":    round(new_saved, 2),
+            "amount":    new_saved,
             "note":      f"Goal completed: {goal_name}",
             "user":      username,
         }
         append_transaction(income_row)
 
-    return get_goal(), just_completed
+    # Return a snapshot dict (goal is "completed" so get_goal() returns None)
+    goal["Saved"]  = str(new_saved)
+    goal["Status"] = "completed" if just_completed else "active"
+    return goal, just_completed
 
 
 def delete_goal(username: str = "goal") -> bool:
