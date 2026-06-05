@@ -43,6 +43,7 @@ _client      = None
 _spreadsheet = None
 _txn_sheet   = None
 _sum_sheet   = None
+_goal_sheet  = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -627,3 +628,174 @@ def get_balance(user_id: str = None) -> dict:
 def rebuild_summary():
     """Public wrapper — force a full summary sheet rebuild."""
     _rebuild_summary_sheet()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Goals sheet
+# ─────────────────────────────────────────────────────────────────────────────
+
+GOAL_HEADERS = ["Name", "Target", "Saved", "Deadline", "Created", "Status"]
+
+# Purple theme for Goals sheet
+_GOAL_HDR_BG = {"red": 0.494, "green": 0.239, "blue": 0.659}
+_GOAL_HDR_FG = {"red": 1.0,   "green": 1.0,   "blue": 1.0}
+_GOAL_ROW_BG = {"red": 0.965, "green": 0.941, "blue": 0.984}  # light lavender
+
+
+def _get_goal_sheet():
+    global _goal_sheet
+    if _goal_sheet:
+        return _goal_sheet
+
+    ws = _get_or_create("Goals", rows=10, cols=10)
+
+    existing = ws.row_values(1)
+    if existing != GOAL_HEADERS:
+        ws.clear()
+        ws.update("A1", [GOAL_HEADERS], value_input_option="RAW")
+        _style_goal_header(ws)
+
+    _goal_sheet = ws
+    return ws
+
+
+def _style_goal_header(ws):
+    """Apply purple header styling to the Goals sheet."""
+    ss  = _connect()
+    sid = ws.id
+
+    requests = [
+        _freeze_request(sid, rows=1),
+        _col_width_request(sid, 0, 180),
+        _col_width_request(sid, 1, 110),
+        _col_width_request(sid, 2, 110),
+        _col_width_request(sid, 3, 120),
+        _col_width_request(sid, 4, 120),
+        _col_width_request(sid, 5, 100),
+        _row_height_request(sid, 0, 1, 32),
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sid,
+                    "startRowIndex": 0, "endRowIndex": 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": len(GOAL_HEADERS),
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        **_cell_fmt(bg=_GOAL_HDR_BG, fg=_GOAL_HDR_FG,
+                                    bold=True, h_align="CENTER", font_size=11),
+                        "borders": _full_border(
+                            "SOLID", 2, {"red": 0.3, "green": 0.1, "blue": 0.5}
+                        ),
+                    }
+                },
+                "fields": "userEnteredFormat",
+            }
+        },
+    ]
+    ss.batch_update({"requests": requests})
+    logger.info("Goal sheet header styled")
+
+
+def _style_goal_data_row(ws):
+    """Style the single data row (row 2) of the Goals sheet."""
+    ss  = _connect()
+    sid = ws.id
+
+    requests = [{
+        "repeatCell": {
+            "range": {
+                "sheetId": sid,
+                "startRowIndex": 1, "endRowIndex": 2,
+                "startColumnIndex": 0,
+                "endColumnIndex": len(GOAL_HEADERS),
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    **_cell_fmt(bg=_GOAL_ROW_BG, font_size=10),
+                    "borders": _full_border(),
+                }
+            },
+            "fields": "userEnteredFormat",
+        }
+    }]
+    ss.batch_update({"requests": requests})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public Goal API
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_goal() -> dict | None:
+    """Return the current active goal as a dict, or None if no active goal."""
+    ws   = _get_goal_sheet()
+    rows = ws.get_all_values()
+    if len(rows) < 2 or not any(rows[1]):
+        return None
+    goal = dict(zip(GOAL_HEADERS, rows[1]))
+    if goal.get("Status", "").strip().lower() != "active":
+        return None
+    return goal
+
+
+def create_goal(name: str, target: float, deadline: str = "") -> dict:
+    """
+    Create a new goal, overwriting any existing one (only one at a time).
+    deadline should be 'YYYY-MM-DD' or empty string.
+    Returns the newly created goal dict.
+    """
+    global _goal_sheet
+    ws      = _get_goal_sheet()
+    now_ist = datetime.now(_IST).strftime("%d-%m-%Y")
+
+    row = [
+        name.strip(),
+        round(target, 2),
+        0.0,
+        deadline.strip(),
+        now_ist,
+        "active",
+    ]
+
+    all_rows = ws.get_all_values()
+    if len(all_rows) >= 2:
+        ws.update("A2", [row], value_input_option="RAW")
+    else:
+        ws.append_row(row, value_input_option="RAW")
+
+    _goal_sheet = None  # invalidate cache so get_goal re-reads fresh data
+    _style_goal_data_row(_get_goal_sheet())
+    return get_goal()
+
+
+def add_to_goal(amount: float) -> dict | None:
+    """
+    Add amount to the current goal's Saved total.
+    Marks goal as 'completed' if target is reached.
+    Returns updated goal dict, or None if no active goal.
+    """
+    global _goal_sheet
+    ws   = _get_goal_sheet()
+    goal = get_goal()
+    if not goal:
+        return None
+
+    new_saved = round(float(goal.get("Saved", 0)) + amount, 2)
+    ws.update("C2", [[new_saved]], value_input_option="RAW")
+
+    target = float(goal.get("Target", 0))
+    if new_saved >= target:
+        ws.update("F2", [["completed"]], value_input_option="RAW")
+
+    _goal_sheet = None  # invalidate cache
+    return get_goal()
+
+
+def delete_goal() -> bool:
+    """Clear the current goal row, effectively removing it."""
+    global _goal_sheet
+    ws = _get_goal_sheet()
+    ws.update("A2:F2", [["", "", "", "", "", ""]], value_input_option="RAW")
+    _goal_sheet = None
+    return True
