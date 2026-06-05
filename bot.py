@@ -1,10 +1,3 @@
-"""
-Telegram Finance Management Bot
-- Local dev:  python bot.py  → polling mode
-- Render.com: gunicorn bot:flask_app --workers 1 --worker-class sync --timeout 120
-              Set WEBHOOK_URL env var to activate webhook mode
-"""
-
 import os
 import asyncio
 import logging
@@ -109,7 +102,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.message.reply_text(
-        f"🔐 Welcome, *{name}*!\n\n"
+        f"🔐 Welcome,!\n\n"
         "This bot is password-protected.\n"
         "Please enter the *password* to continue:",
         parse_mode="Markdown",
@@ -129,8 +122,7 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass  # deletion may fail if bot lacks permission — not critical
         await update.message.reply_text(
-            "✅ *Access granted!* Welcome aboard.\n\n"
-            "Send me any transaction in plain language — English or Hindi!",
+            "🔓 *Access granted!* Welcome Ashish.",
             parse_mode="Markdown",
         )
         return ConversationHandler.END
@@ -304,10 +296,7 @@ async def _goal_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "🎯 *No active goal.*\n\n"
                 "Create one with:\n"
-                "`/goal set <name> | <amount> | <deadline>`\n\n"
-                "*Example:*\n"
-                "`/goal set Goa Trip | 50000 | 2026-12-01`\n"
-                "_(deadline is optional)_",
+                "`/goal set <name> | <amount> | <deadline>`",
                 parse_mode="Markdown",
             )
             return
