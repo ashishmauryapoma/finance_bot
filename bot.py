@@ -646,7 +646,10 @@ def set_webhook():
     if not url:
         return jsonify({"error": "WEBHOOK_URL not set"}), 400
     full = f"{url}/webhook"
-    _loop.run_until_complete(ptb_app.bot.set_webhook(url=full))
+    _loop.run_until_complete(ptb_app.bot.set_webhook(
+        url=full,
+        allowed_updates=["message", "callback_query", "inline_query"],
+    ))
     return jsonify({"ok": True, "webhook_url": full})
 
 
@@ -669,3 +672,4 @@ if __name__ == "__main__":
         logger.info("Polling mode")
         _loop.run_until_complete(ptb_app.shutdown())
         ptb_app.run_polling(allowed_updates=Update.ALL_TYPES)
+
