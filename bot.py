@@ -4,9 +4,10 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 from flask import Flask, request, jsonify
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     filters,
@@ -33,8 +34,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-WAITING_PASSWORD    = 1
-WAITING_GOAL_CONFIRM = 2
+WAITING_PASSWORD = 1
 _IST = timezone(timedelta(hours=5, minutes=30))
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -103,7 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.message.reply_text(
-        f"🔐 Welcome,!\n\n"
+        f"🔐 Welcome,\n\n"
         "This bot is password-protected.\n"
         "Please enter the *password* to continue:",
         parse_mode="Markdown",
@@ -310,7 +310,7 @@ async def _goal_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _goal_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /goal set <name> | <amount> | <deadline(optional)>
-    If a goal already exists, asks for confirmation before replacing it.
+    If a goal already exists, shows inline Yes/No buttons for confirmation.
     """
     raw   = " ".join(context.args[1:]) if len(context.args) > 1 else ""
     parts = [p.strip() for p in raw.split("|")]
@@ -323,7 +323,7 @@ async def _goal_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "_(deadline is optional)_",
             parse_mode="Markdown",
         )
-        return ConversationHandler.END
+        return
 
     name     = parts[0]
     deadline = parts[2].strip() if len(parts) >= 3 else ""
@@ -335,30 +335,40 @@ async def _goal_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ Invalid amount. Use a plain number like `50000`.",
             parse_mode="Markdown",
         )
-        return ConversationHandler.END
+        return
 
     if target <= 0:
         await update.message.reply_text("⚠️ Target amount must be greater than zero.")
-        return ConversationHandler.END
+        return
 
     try:
         existing = get_goal()
         if existing:
-            # Store the new goal details and ask for confirmation
+            # Store the new goal details and show inline buttons
             context.user_data["pending_goal"] = {
                 "name": name, "target": target, "deadline": deadline
             }
             saved = float(existing.get("Saved", 0))
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Yes", callback_data="goal_replace:yes"),
+                    InlineKeyboardButton("❌ No", callback_data="goal_replace:no"),
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
             await update.message.reply_text(
                 f"⚠️ *You already have an active goal:*\n\n"
                 f"🎯 *{existing['Name']}* — ₹{float(existing['Target']):,.0f} target\n"
                 f"💰 Saved so far: ₹{saved:,.2f}\n\n"
                 f"Replacing it will *refund ₹{saved:,.2f}* back to your net balance "
                 f"and start fresh with *{name}*.\n\n"
-                f"Type *yes* to confirm or *no* to cancel:",
+                f"Confirm replacement?",
                 parse_mode="Markdown",
+                reply_markup=reply_markup,
             )
-            return WAITING_GOAL_CONFIRM
+            return
 
         # No existing goal — create immediately
         goal = create_goal(name, target, deadline)
@@ -370,51 +380,78 @@ async def _goal_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"goal_set error: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Could not create goal. Try again.")
 
-    return ConversationHandler.END
 
+async def _goal_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle all inline button callbacks for goal confirmations."""
+    query = update.callback_query
+    await query.answer()  # removes the loading spinner on the button
 
-async def _goal_confirm_replace(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle yes/no confirmation for replacing an existing goal."""
-    reply = update.message.text.strip().lower()
+    data   = query.data            # e.g. "goal_replace:yes" or "goal_delete:no"
+    action, choice = data.split(":")
+
     username = (
-        update.effective_user.username
-        or update.effective_user.first_name
+        query.from_user.username
+        or query.from_user.first_name
         or "goal"
     )
 
-    if reply in ("yes", "y", "ha", "haan", "ok", "okay"):
-        pending = context.user_data.pop("pending_goal", None)
-        if not pending:
-            await update.message.reply_text("⚠️ Session expired. Please run `/goal set` again.")
-            return ConversationHandler.END
-
-        try:
-            # Refund old goal's saved amount, then create new goal
-            delete_goal(username)
-            goal = create_goal(pending["name"], pending["target"], pending["deadline"])
-            await update.message.reply_text(
-                f"✅ *Old goal removed & balance refunded.*\n\n"
-                f"🎯 *New goal created!*\n\n{format_goal_card(goal)}",
+    # ── Goal replacement ──────────────────────────────────────────────────────
+    if action == "goal_replace":
+        if choice == "yes":
+            pending = context.user_data.pop("pending_goal", None)
+            if not pending:
+                await query.edit_message_text(
+                    "⚠️ Session expired. Please run `/goal set` again."
+                )
+                return
+            try:
+                delete_goal(username)
+                goal = create_goal(pending["name"], pending["target"], pending["deadline"])
+                await query.edit_message_text(
+                    f"✅ *Old goal removed & balance refunded.*\n\n"
+                    f"🎯 *New goal created!*\n\n{format_goal_card(goal)}",
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                logger.error(f"goal_replace callback error: {e}", exc_info=True)
+                await query.edit_message_text("⚠️ Something went wrong. Try again.")
+        else:
+            context.user_data.pop("pending_goal", None)
+            await query.edit_message_text(
+                "❌ *Cancelled.* Your current goal is still active.",
                 parse_mode="Markdown",
             )
-        except Exception as e:
-            logger.error(f"goal_confirm_replace error: {e}", exc_info=True)
-            await update.message.reply_text("⚠️ Something went wrong. Try again.")
 
-    elif reply in ("no", "n", "nahi", "cancel"):
-        context.user_data.pop("pending_goal", None)
-        await update.message.reply_text(
-            "❌ *Cancelled.* Your current goal is still active.",
-            parse_mode="Markdown",
-        )
-    else:
-        await update.message.reply_text(
-            "Please reply with *yes* to confirm or *no* to cancel.",
-            parse_mode="Markdown",
-        )
-        return WAITING_GOAL_CONFIRM
-
-    return ConversationHandler.END
+    # ── Goal deletion ─────────────────────────────────────────────────────────
+    elif action == "goal_delete":
+        if choice == "yes":
+            try:
+                goal = get_goal()
+                if not goal:
+                    await query.edit_message_text("🎯 No active goal to delete.")
+                    return
+                name  = goal["Name"]
+                saved = float(goal.get("Saved", 0))
+                delete_goal(username)
+                if saved > 0:
+                    await query.edit_message_text(
+                        f"🗑️ Goal *{name}* deleted.\n\n"
+                        f"💰 ₹{saved:,.2f} you had deposited has been refunded to your balance.",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await query.edit_message_text(
+                        f"🗑️ Goal *{name}* deleted.",
+                        parse_mode="Markdown",
+                    )
+            except Exception as e:
+                logger.error(f"goal_delete callback error: {e}", exc_info=True)
+                await query.edit_message_text("⚠️ Could not delete goal. Try again.")
+        else:
+            await query.edit_message_text(
+                "❌ *Cancelled.* Your goal is safe.",
+                parse_mode="Markdown",
+            )
 
 
 async def _goal_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -482,31 +519,35 @@ async def _goal_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _goal_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/goal delete — remove the active goal and refund any deposited amount."""
-    username = (
-        update.effective_user.username
-        or update.effective_user.first_name
-        or "goal"
-    )
+    """/goal delete — ask confirmation via inline buttons before deleting."""
     try:
         goal = get_goal()
         if not goal:
             await update.message.reply_text("🎯 No active goal to delete.")
             return
-        name   = goal["Name"]
-        saved  = float(goal.get("Saved", 0))
-        delete_goal(username)
-        if saved > 0:
-            await update.message.reply_text(
-                f"🗑️ Goal *{name}* deleted.\n\n"
-                f"💰 ₹{saved:,.2f} you had deposited has been refunded to your balance.",
-                parse_mode="Markdown",
-            )
-        else:
-            await update.message.reply_text(
-                f"🗑️ Goal *{name}* deleted.",
-                parse_mode="Markdown",
-            )
+
+        name  = goal["Name"]
+        saved = float(goal.get("Saved", 0))
+
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Yes, delete it", callback_data="goal_delete:yes"),
+                InlineKeyboardButton("❌ No, keep it",    callback_data="goal_delete:no"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        refund_note = (
+            f"\n\n💰 ₹{saved:,.2f} will be *refunded* to your balance."
+            if saved > 0 else ""
+        )
+
+        await update.message.reply_text(
+            f"🗑️ *Delete goal \"{name}\"?*{refund_note}\n\n"
+            f"This cannot be undone.",
+            parse_mode="Markdown",
+            reply_markup=reply_markup,
+        )
     except Exception as e:
         logger.error(f"goal_delete error: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Could not delete goal. Try again.")
@@ -550,9 +591,6 @@ conv = ConversationHandler(
         WAITING_PASSWORD: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, handle_password)
         ],
-        WAITING_GOAL_CONFIRM: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, _goal_confirm_replace)
-        ],
     },
     fallbacks=[
         CommandHandler("start", start),
@@ -562,6 +600,7 @@ conv = ConversationHandler(
 )
 
 ptb_app.add_handler(conv)
+ptb_app.add_handler(CallbackQueryHandler(_goal_button_callback, pattern="^goal_"))
 ptb_app.add_handler(CommandHandler("logout",  logout))
 ptb_app.add_handler(CommandHandler("recent",  recent))
 ptb_app.add_handler(CommandHandler("summary", summary))
