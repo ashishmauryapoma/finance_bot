@@ -26,13 +26,11 @@ from groq_handler import extract_transaction
 from sheets_handler import (
     append_transaction, get_recent_transactions,
     get_summary, get_balance, rebuild_summary,
-)
-from goals_handler import (
-    cmd_new_goal, cmd_deposit, cmd_goals,
-    cmd_goal_detail, cmd_delete_goal, cmd_all_goals,
+    get_goal, create_goal, add_to_goal, delete_goal,
 )
 from auth import verify_password, is_authenticated, set_authenticated
 from utils import format_summary, format_recent
+from goal_handler import format_goal_card, format_goal_complete
 
 load_dotenv()
 
@@ -103,7 +101,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/recent — Last 10 transactions\n"
             "/summary — Monthly summary\n"
             "/balance — Balance details\n"
-            "/goals — Your savings goals\n"
+            "/goal — Savings goal tracker\n"
             "/logout — Log out\n"
             "/help — Help",
             parse_mode="Markdown",
@@ -192,7 +190,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Transaction command handlers
+# Finance command handlers
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def recent(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -253,207 +251,21 @@ async def fix_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Failed: {e}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Goals command handlers
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def goals(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all active goals: /goals"""
-    user_id  = str(update.effective_user.id)
-    username = update.effective_user.username or update.effective_user.first_name or "Unknown"
-    if not is_authenticated(user_id):
-        await update.message.reply_text("🔐 Please /start first.")
-        return
-    try:
-        msg = cmd_goals(username)
-        await update.message.reply_text(msg, parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Goals error: {e}")
-        await update.message.reply_text("⚠️ Could not fetch goals.")
-
-
-async def all_goals(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all goals including completed/cancelled: /allgoals"""
-    user_id  = str(update.effective_user.id)
-    username = update.effective_user.username or update.effective_user.first_name or "Unknown"
-    if not is_authenticated(user_id):
-        await update.message.reply_text("🔐 Please /start first.")
-        return
-    try:
-        msg = cmd_all_goals(username)
-        await update.message.reply_text(msg, parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"All goals error: {e}")
-        await update.message.reply_text("⚠️ Could not fetch goals.")
-
-
-async def new_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Create a new savings goal.
-    Usage: /newgoal <Name> | <Target> | <DD-MM-YYYY>
-    Example: /newgoal Trip to Goa | 50000 | 01-12-2026
-    """
-    user_id  = str(update.effective_user.id)
-    username = update.effective_user.username or update.effective_user.first_name or "Unknown"
-    if not is_authenticated(user_id):
-        await update.message.reply_text("🔐 Please /start first.")
-        return
-
-    usage = (
-        "📌 *Usage:* `/newgoal Name | Target | DD-MM-YYYY`\n\n"
-        "Example:\n`/newgoal Trip to Goa | 50000 | 01-12-2026`"
-    )
-
-    if not context.args:
-        await update.message.reply_text(usage, parse_mode="Markdown")
-        return
-
-    raw = " ".join(context.args)
-    parts = [p.strip() for p in raw.split("|")]
-
-    if len(parts) != 3:
-        await update.message.reply_text(
-            "❌ Wrong format. Use `|` to separate fields.\n\n" + usage,
-            parse_mode="Markdown",
-        )
-        return
-
-    name_str, target_str, deadline_str = parts
-
-    try:
-        target = float(target_str.replace(",", "").replace("₹", "").strip())
-    except ValueError:
-        await update.message.reply_text("❌ Invalid target amount.", parse_mode="Markdown")
-        return
-
-    try:
-        datetime.strptime(deadline_str, "%d-%m-%Y")
-    except ValueError:
-        await update.message.reply_text(
-            "❌ Invalid date format. Use DD-MM-YYYY (e.g. 01-12-2026)",
-            parse_mode="Markdown",
-        )
-        return
-
-    try:
-        msg = cmd_new_goal(name_str, target, deadline_str, username)
-        await update.message.reply_text(msg, parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"New goal error: {e}")
-        await update.message.reply_text(f"⚠️ Failed to create goal: {e}")
-
-
-async def deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Add money to a goal.
-    Usage: /deposit <GoalID> <Amount>
-    Example: /deposit A1B2C3D4 5000
-    """
-    user_id = str(update.effective_user.id)
-    if not is_authenticated(user_id):
-        await update.message.reply_text("🔐 Please /start first.")
-        return
-
-    usage = "📌 *Usage:* `/deposit <GoalID> <Amount>`\n\nExample: `/deposit A1B2C3D4 5000`"
-
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text(usage, parse_mode="Markdown")
-        return
-
-    goal_id    = context.args[0].strip().upper()
-    amount_str = context.args[1].strip().replace(",", "").replace("₹", "")
-
-    try:
-        amount = float(amount_str)
-    except ValueError:
-        await update.message.reply_text("❌ Invalid amount.", parse_mode="Markdown")
-        return
-
-    if amount <= 0:
-        await update.message.reply_text("❌ Amount must be positive.")
-        return
-
-    try:
-        msg = cmd_deposit(goal_id, amount)
-        await update.message.reply_text(msg, parse_mode="Markdown")
-    except ValueError as e:
-        await update.message.reply_text(f"❌ {e}")
-    except Exception as e:
-        logger.error(f"Deposit error: {e}")
-        await update.message.reply_text("⚠️ Failed to deposit. Try again.")
-
-
-async def goal_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Show full card for a single goal.
-    Usage: /goal <GoalID>
-    """
-    user_id = str(update.effective_user.id)
-    if not is_authenticated(user_id):
-        await update.message.reply_text("🔐 Please /start first.")
-        return
-
-    if not context.args:
-        await update.message.reply_text(
-            "📌 *Usage:* `/goal <GoalID>`", parse_mode="Markdown"
-        )
-        return
-
-    goal_id = context.args[0].strip().upper()
-    try:
-        msg = cmd_goal_detail(goal_id)
-        await update.message.reply_text(msg, parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Goal detail error: {e}")
-        await update.message.reply_text("⚠️ Failed to fetch goal.")
-
-
-async def cancel_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Cancel (soft-delete) a goal.
-    Usage: /cancelgoal <GoalID>
-    """
-    user_id = str(update.effective_user.id)
-    if not is_authenticated(user_id):
-        await update.message.reply_text("🔐 Please /start first.")
-        return
-
-    if not context.args:
-        await update.message.reply_text(
-            "📌 *Usage:* `/cancelgoal <GoalID>`", parse_mode="Markdown"
-        )
-        return
-
-    goal_id = context.args[0].strip().upper()
-    try:
-        msg = cmd_delete_goal(goal_id)
-        await update.message.reply_text(msg, parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Cancel goal error: {e}")
-        await update.message.reply_text("⚠️ Failed to cancel goal.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Help & unknown
-# ─────────────────────────────────────────────────────────────────────────────
-
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "💡 *Finance Bot — Help*\n\n"
         "Just type any transaction naturally and it gets saved instantly.\n\n"
-        "📊 *Transactions*\n"
+        "📋 *Transactions*\n"
         "/recent — Last 10 entries\n"
         "/summary — Monthly summary\n"
-        "/balance — Balance details\n"
+        "/balance — Net balance\n"
         "/fix — Rebuild summary sheet\n\n"
-        "🎯 *Savings Goals*\n"
-        "/goals — View active goals\n"
-        "/allgoals — All goals (incl. completed)\n"
-        "/newgoal Name | Target | DD-MM-YYYY — Create goal\n"
-        "/goal <ID> — Goal details\n"
-        "/deposit <ID> <Amount> — Add savings\n"
-        "/cancelgoal <ID> — Cancel a goal\n\n"
-        "⚙️ *Account*\n"
+        "🎯 *Goal Tracker*\n"
+        "/goal — View current goal\n"
+        "/goal set <name> \\| <amount> \\| <deadline> — Create goal\n"
+        "/goal add <amount> — Add savings to goal\n"
+        "/goal delete — Remove current goal\n\n"
+        "🔐 *Account*\n"
         "/logout — Log out\n"
         "/help — This message",
         parse_mode="Markdown",
@@ -462,6 +274,182 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❓ Unknown command. Use /help.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Goal command handlers
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _goal_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the current goal progress card."""
+    try:
+        goal = get_goal()
+        if not goal:
+            await update.message.reply_text(
+                "🎯 *No active goal.*\n\n"
+                "Create one with:\n"
+                "`/goal set <name> | <amount> | <deadline>`\n\n"
+                "*Example:*\n"
+                "`/goal set Goa Trip | 50000 | 2026-12-01`\n"
+                "_(deadline is optional)_",
+                parse_mode="Markdown",
+            )
+            return
+        await update.message.reply_text(format_goal_card(goal), parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"goal_status error: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Could not fetch goal. Try again.")
+
+
+async def _goal_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /goal set <name> | <amount> | <deadline(optional)>
+    Example: /goal set Goa Trip | 50000 | 2026-12-01
+    """
+    # args[0] is "set", everything after is the payload
+    raw   = " ".join(context.args[1:]) if len(context.args) > 1 else ""
+    parts = [p.strip() for p in raw.split("|")]
+
+    if len(parts) < 2 or not parts[0]:
+        await update.message.reply_text(
+            "⚠️ *Usage:* `/goal set <name> | <amount> | <deadline>`\n\n"
+            "*Example:*\n"
+            "`/goal set Goa Trip | 50000 | 2026-12-01`\n"
+            "_(deadline is optional)_",
+            parse_mode="Markdown",
+        )
+        return
+
+    name     = parts[0]
+    deadline = parts[2].strip() if len(parts) >= 3 else ""
+
+    try:
+        target = float(parts[1].replace(",", "").replace("₹", "").strip())
+    except ValueError:
+        await update.message.reply_text(
+            "⚠️ Invalid amount. Use a plain number like `50000`.",
+            parse_mode="Markdown",
+        )
+        return
+
+    if target <= 0:
+        await update.message.reply_text("⚠️ Target amount must be greater than zero.")
+        return
+
+    try:
+        # Warn if replacing an existing goal
+        existing = get_goal()
+        if existing:
+            await update.message.reply_text(
+                f"⚠️ Replacing your current goal: *{existing['Name']}* "
+                f"(₹{float(existing['Saved']):,.0f} saved so far).\n\n"
+                "Creating new goal now...",
+                parse_mode="Markdown",
+            )
+
+        goal = create_goal(name, target, deadline)
+        await update.message.reply_text(
+            f"✅ *Goal created!*\n\n{format_goal_card(goal)}",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.error(f"goal_set error: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Could not create goal. Try again.")
+
+
+async def _goal_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /goal add <amount>
+    Add money toward the active goal.
+    """
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "⚠️ *Usage:* `/goal add <amount>`\n"
+            "*Example:* `/goal add 2000`",
+            parse_mode="Markdown",
+        )
+        return
+
+    try:
+        amount = float(context.args[1].replace(",", "").replace("₹", "").strip())
+    except ValueError:
+        await update.message.reply_text(
+            "⚠️ Invalid amount. Use a plain number like `2000`.",
+            parse_mode="Markdown",
+        )
+        return
+
+    if amount <= 0:
+        await update.message.reply_text("⚠️ Amount must be greater than zero.")
+        return
+
+    try:
+        goal = add_to_goal(amount)
+        if not goal:
+            await update.message.reply_text(
+                "🎯 No active goal. Create one with `/goal set`.",
+                parse_mode="Markdown",
+            )
+            return
+
+        saved  = float(goal.get("Saved", 0))
+        target = float(goal.get("Target", 0))
+
+        if saved >= target:
+            await update.message.reply_text(
+                f"➕ Added ₹{amount:,.2f}\n\n{format_goal_complete(goal)}",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(
+                f"➕ Added ₹{amount:,.2f}\n\n{format_goal_card(goal)}",
+                parse_mode="Markdown",
+            )
+    except Exception as e:
+        logger.error(f"goal_add error: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Could not update goal. Try again.")
+
+
+async def _goal_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/goal delete — remove the active goal."""
+    try:
+        goal = get_goal()
+        if not goal:
+            await update.message.reply_text("🎯 No active goal to delete.")
+            return
+        delete_goal()
+        await update.message.reply_text(
+            f"🗑️ Goal *{goal['Name']}* deleted.",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.error(f"goal_delete error: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Could not delete goal. Try again.")
+
+
+async def goal_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Route /goal subcommands:
+      /goal            → show status
+      /goal set ...    → create goal
+      /goal add <amt>  → add savings
+      /goal delete     → remove goal
+    """
+    user_id = str(update.effective_user.id)
+    if not is_authenticated(user_id):
+        await update.message.reply_text("🔐 Please /start first.")
+        return
+
+    sub = context.args[0].lower() if context.args else ""
+
+    if sub == "set":
+        await _goal_set(update, context)
+    elif sub == "add":
+        await _goal_add(update, context)
+    elif sub == "delete":
+        await _goal_delete(update, context)
+    else:
+        await _goal_status(update, context)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -480,24 +468,13 @@ conv = ConversationHandler(
 )
 
 ptb_app.add_handler(conv)
-
-# Transactions
-ptb_app.add_handler(CommandHandler("logout",   logout))
-ptb_app.add_handler(CommandHandler("recent",   recent))
-ptb_app.add_handler(CommandHandler("summary",  summary))
-ptb_app.add_handler(CommandHandler("balance",  balance))
-ptb_app.add_handler(CommandHandler("fix",      fix_summary))
-
-# Goals
-ptb_app.add_handler(CommandHandler("goals",      goals))
-ptb_app.add_handler(CommandHandler("allgoals",   all_goals))
-ptb_app.add_handler(CommandHandler("newgoal",    new_goal))
-ptb_app.add_handler(CommandHandler("goal",       goal_detail))
-ptb_app.add_handler(CommandHandler("deposit",    deposit))
-ptb_app.add_handler(CommandHandler("cancelgoal", cancel_goal))
-
-# Catch-all
-ptb_app.add_handler(CommandHandler("help",     help_command))
+ptb_app.add_handler(CommandHandler("logout",  logout))
+ptb_app.add_handler(CommandHandler("recent",  recent))
+ptb_app.add_handler(CommandHandler("summary", summary))
+ptb_app.add_handler(CommandHandler("balance", balance))
+ptb_app.add_handler(CommandHandler("fix",     fix_summary))
+ptb_app.add_handler(CommandHandler("help",    help_command))
+ptb_app.add_handler(CommandHandler("goal",    goal_router))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 ptb_app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
