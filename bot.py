@@ -172,6 +172,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             goal_check = await detect_goal_deposit(text)
             if goal_check and goal_check.get("is_goal_deposit") and goal_check.get("amount"):
                 amount = float(goal_check["amount"])
+
+                # ── Check for overpayment ──────────────────────────────────
+                saved_so_far = float(active_goal.get("Saved", 0))
+                target_amt   = float(active_goal.get("Target", 0))
+                remaining    = round(target_amt - saved_so_far, 2)
+                if amount > remaining:
+                    await update.message.reply_text(
+                        f"⚠️ *Deposit failed — amount exceeds goal limit!*\n\n"
+                        f"💰 Already saved: ₹{saved_so_far:,.2f}\n"
+                        f"🎯 Target: ₹{target_amt:,.2f}\n"
+                        f"📌 *Only ₹{remaining:,.2f} more needed* to complete this goal.\n\n"
+                        f"Please deposit ₹{remaining:,.2f} or less.",
+                        parse_mode="Markdown",
+                    )
+                    return
+
                 goal, just_completed = add_to_goal(amount, username)
 
                 if just_completed:
@@ -488,6 +504,23 @@ async def _goal_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
+        # ── Check for overpayment before depositing ───────────────────────────
+        current_goal = get_goal()
+        if current_goal:
+            saved_so_far = float(current_goal.get("Saved", 0))
+            target_amt   = float(current_goal.get("Target", 0))
+            remaining    = round(target_amt - saved_so_far, 2)
+            if amount > remaining:
+                await update.message.reply_text(
+                    f"⚠️ *Deposit failed — amount exceeds goal limit!*\n\n"
+                    f"💰 Already saved: ₹{saved_so_far:,.2f}\n"
+                    f"🎯 Target: ₹{target_amt:,.2f}\n"
+                    f"📌 *Only ₹{remaining:,.2f} more needed* to complete this goal.\n\n"
+                    f"Please deposit ₹{remaining:,.2f} or less.",
+                    parse_mode="Markdown",
+                )
+                return
+
         goal, just_completed = add_to_goal(amount, username)
 
         if goal is None:
