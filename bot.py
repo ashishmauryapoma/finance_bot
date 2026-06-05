@@ -103,7 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.message.reply_text(
-        f"🔐 Welcome,\n\n"
+        f"🔐 Welcome,!\n\n"
         "This bot is password-protected.\n"
         "Please enter the *password* to continue:",
         parse_mode="Markdown",
@@ -585,7 +585,6 @@ async def goal_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 conv = ConversationHandler(
     entry_points=[
         CommandHandler("start", start),
-        CommandHandler("goal",  goal_router),
     ],
     states={
         WAITING_PASSWORD: [
@@ -594,7 +593,6 @@ conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("start", start),
-        CommandHandler("goal",  goal_router),
     ],
     per_message=False,
 )
@@ -606,6 +604,7 @@ ptb_app.add_handler(CommandHandler("recent",  recent))
 ptb_app.add_handler(CommandHandler("summary", summary))
 ptb_app.add_handler(CommandHandler("balance", balance))
 ptb_app.add_handler(CommandHandler("help",    help_command))
+ptb_app.add_handler(CommandHandler("goal",    goal_router))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 ptb_app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
