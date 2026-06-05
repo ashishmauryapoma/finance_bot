@@ -33,7 +33,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-WAITING_PASSWORD = 1
+WAITING_PASSWORD    = 1
+WAITING_GOAL_CONFIRM = 2
 _IST = timezone(timedelta(hours=5, minutes=30))
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -309,9 +310,8 @@ async def _goal_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _goal_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /goal set <name> | <amount> | <deadline(optional)>
-    Example: /goal set Goa Trip | 50000 | 2026-12-01
+    If a goal already exists, asks for confirmation before replacing it.
     """
-    # args[0] is "set", everything after is the payload
     raw   = " ".join(context.args[1:]) if len(context.args) > 1 else ""
     parts = [p.strip() for p in raw.split("|")]
 
@@ -323,7 +323,7 @@ async def _goal_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "_(deadline is optional)_",
             parse_mode="Markdown",
         )
-        return
+        return ConversationHandler.END
 
     name     = parts[0]
     deadline = parts[2].strip() if len(parts) >= 3 else ""
@@ -335,23 +335,32 @@ async def _goal_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ Invalid amount. Use a plain number like `50000`.",
             parse_mode="Markdown",
         )
-        return
+        return ConversationHandler.END
 
     if target <= 0:
         await update.message.reply_text("⚠️ Target amount must be greater than zero.")
-        return
+        return ConversationHandler.END
 
     try:
-        # Warn if replacing an existing goal
         existing = get_goal()
         if existing:
+            # Store the new goal details and ask for confirmation
+            context.user_data["pending_goal"] = {
+                "name": name, "target": target, "deadline": deadline
+            }
+            saved = float(existing.get("Saved", 0))
             await update.message.reply_text(
-                f"⚠️ Replacing your current goal: *{existing['Name']}* "
-                f"(₹{float(existing['Saved']):,.0f} saved so far).\n\n"
-                "Creating new goal now...",
+                f"⚠️ *You already have an active goal:*\n\n"
+                f"🎯 *{existing['Name']}* — ₹{float(existing['Target']):,.0f} target\n"
+                f"💰 Saved so far: ₹{saved:,.2f}\n\n"
+                f"Replacing it will *refund ₹{saved:,.2f}* back to your net balance "
+                f"and start fresh with *{name}*.\n\n"
+                f"Type *yes* to confirm or *no* to cancel:",
                 parse_mode="Markdown",
             )
+            return WAITING_GOAL_CONFIRM
 
+        # No existing goal — create immediately
         goal = create_goal(name, target, deadline)
         await update.message.reply_text(
             f"✅ *Goal created!*\n\n{format_goal_card(goal)}",
@@ -360,6 +369,52 @@ async def _goal_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"goal_set error: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Could not create goal. Try again.")
+
+    return ConversationHandler.END
+
+
+async def _goal_confirm_replace(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle yes/no confirmation for replacing an existing goal."""
+    reply = update.message.text.strip().lower()
+    username = (
+        update.effective_user.username
+        or update.effective_user.first_name
+        or "goal"
+    )
+
+    if reply in ("yes", "y", "ha", "haan", "ok", "okay"):
+        pending = context.user_data.pop("pending_goal", None)
+        if not pending:
+            await update.message.reply_text("⚠️ Session expired. Please run `/goal set` again.")
+            return ConversationHandler.END
+
+        try:
+            # Refund old goal's saved amount, then create new goal
+            delete_goal(username)
+            goal = create_goal(pending["name"], pending["target"], pending["deadline"])
+            await update.message.reply_text(
+                f"✅ *Old goal removed & balance refunded.*\n\n"
+                f"🎯 *New goal created!*\n\n{format_goal_card(goal)}",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.error(f"goal_confirm_replace error: {e}", exc_info=True)
+            await update.message.reply_text("⚠️ Something went wrong. Try again.")
+
+    elif reply in ("no", "n", "nahi", "cancel"):
+        context.user_data.pop("pending_goal", None)
+        await update.message.reply_text(
+            "❌ *Cancelled.* Your current goal is still active.",
+            parse_mode="Markdown",
+        )
+    else:
+        await update.message.reply_text(
+            "Please reply with *yes* to confirm or *no* to cancel.",
+            parse_mode="Markdown",
+        )
+        return WAITING_GOAL_CONFIRM
+
+    return ConversationHandler.END
 
 
 async def _goal_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -487,13 +542,22 @@ async def goal_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────────────────────────────────────────
 
 conv = ConversationHandler(
-    entry_points=[CommandHandler("start", start)],
+    entry_points=[
+        CommandHandler("start", start),
+        CommandHandler("goal",  goal_router),
+    ],
     states={
         WAITING_PASSWORD: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, handle_password)
         ],
+        WAITING_GOAL_CONFIRM: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, _goal_confirm_replace)
+        ],
     },
-    fallbacks=[CommandHandler("start", start)],
+    fallbacks=[
+        CommandHandler("start", start),
+        CommandHandler("goal",  goal_router),
+    ],
     per_message=False,
 )
 
@@ -503,7 +567,6 @@ ptb_app.add_handler(CommandHandler("recent",  recent))
 ptb_app.add_handler(CommandHandler("summary", summary))
 ptb_app.add_handler(CommandHandler("balance", balance))
 ptb_app.add_handler(CommandHandler("help",    help_command))
-ptb_app.add_handler(CommandHandler("goal",    goal_router))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 ptb_app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
