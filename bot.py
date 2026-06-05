@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 from groq_handler import extract_transaction, detect_goal_deposit
 from sheets_handler import (
     append_transaction, get_recent_transactions,
-    get_summary, get_balance, rebuild_summary,
+    get_summary, get_balance,
     get_goal, create_goal, add_to_goal, delete_goal,
 )
 from auth import verify_password, is_authenticated, set_authenticated
@@ -123,6 +123,11 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if verify_password(entered):
         set_authenticated(user_id, True)
+        # Delete the message containing the password for security
+        try:
+            await update.message.delete()
+        except Exception:
+            pass  # deletion may fail if bot lacks permission — not critical
         await update.message.reply_text(
             "✅ *Access granted!* Welcome aboard.\n\n"
             "Send me any transaction in plain language — English or Hindi!",
@@ -263,19 +268,6 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Could not fetch. Try again later.")
 
 
-async def fix_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    if not is_authenticated(user_id):
-        await update.message.reply_text("🔐 Please /start first.")
-        return
-    await update.message.reply_text("🔄 Rebuilding summary sheet...")
-    try:
-        rebuild_summary()
-        await update.message.reply_text("✅ Summary rebuilt!")
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Failed: {e}")
-
-
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "💡 *Finance Bot — Help*\n\n"
@@ -283,8 +275,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📋 *Transactions*\n"
         "/recent — Last 10 entries\n"
         "/summary — Monthly summary\n"
-        "/balance — Net balance\n"
-        "/fix — Rebuild summary sheet\n\n"
+        "/balance — Net balance\n\n"
         "🎯 *Goal Tracker*\n"
         "/goal — View current goal\n"
         "/goal set <name> \\| <amount> \\| <deadline> — Create goal\n"
@@ -447,17 +438,31 @@ async def _goal_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _goal_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/goal delete — remove the active goal."""
+    """/goal delete — remove the active goal and refund any deposited amount."""
+    username = (
+        update.effective_user.username
+        or update.effective_user.first_name
+        or "goal"
+    )
     try:
         goal = get_goal()
         if not goal:
             await update.message.reply_text("🎯 No active goal to delete.")
             return
-        delete_goal()
-        await update.message.reply_text(
-            f"🗑️ Goal *{goal['Name']}* deleted.",
-            parse_mode="Markdown",
-        )
+        name   = goal["Name"]
+        saved  = float(goal.get("Saved", 0))
+        delete_goal(username)
+        if saved > 0:
+            await update.message.reply_text(
+                f"🗑️ Goal *{name}* deleted.\n\n"
+                f"💰 ₹{saved:,.2f} you had deposited has been refunded to your balance.",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(
+                f"🗑️ Goal *{name}* deleted.",
+                parse_mode="Markdown",
+            )
     except Exception as e:
         logger.error(f"goal_delete error: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Could not delete goal. Try again.")
@@ -508,7 +513,6 @@ ptb_app.add_handler(CommandHandler("logout",  logout))
 ptb_app.add_handler(CommandHandler("recent",  recent))
 ptb_app.add_handler(CommandHandler("summary", summary))
 ptb_app.add_handler(CommandHandler("balance", balance))
-ptb_app.add_handler(CommandHandler("fix",     fix_summary))
 ptb_app.add_handler(CommandHandler("help",    help_command))
 ptb_app.add_handler(CommandHandler("goal",    goal_router))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
