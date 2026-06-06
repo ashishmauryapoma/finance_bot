@@ -89,7 +89,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_authenticated(user_id):
         await update.message.reply_text(
-            f"👋 Welcome back, *{name}*!\n\n"
+            f"👋 Welcome back, Ashish!\n\n"
             "Just tell me what you spent or earned and I'll save it.\n\n"
             "🔧 *Commands:*\n"
             "/recent — Last 10 transactions\n"
@@ -103,7 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     prompt_msg = await update.message.reply_text(
-        f"🔐 Welcome,!\n\n"
+        f"🔐 Welcome,\n\n"
         "This bot is password-protected.\n"
         "Please enter the *password* to continue:",
         parse_mode="Markdown",
@@ -135,7 +135,7 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass  # ignore if already deleted or no permission
         await update.message.reply_text(
-            "🔓 *Access granted!* Welcome Ashish.",
+            "🔓 *Access granted!* Welcome Ashish!.",
             parse_mode="Markdown",
         )
         return ConversationHandler.END
