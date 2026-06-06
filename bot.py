@@ -89,7 +89,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_authenticated(user_id):
         await update.message.reply_text(
-            f"👋 Welcome back, *{name}*!\n\n"
+            f"👋 Welcome back, Ashish!\n\n"
             "Just tell me what you spent or earned and I'll save it.\n\n"
             "🔧 *Commands:*\n"
             "/recent — Last 10 transactions\n"
