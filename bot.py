@@ -89,7 +89,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_authenticated(user_id):
         await update.message.reply_text(
-            f"👋 Welcome back, Ashish!\n\n"
+            f"👋 Welcome back, *{name}*!\n\n"
             "Just tell me what you spent or earned and I'll save it.\n\n"
             "🔧 *Commands:*\n"
             "/recent — Last 10 transactions\n"
@@ -102,12 +102,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    await update.message.reply_text(
-        f"🔐 Welcome,\n\n"
+    prompt_msg = await update.message.reply_text(
+        f"🔐 Welcome,!\n\n"
         "This bot is password-protected.\n"
         "Please enter the *password* to continue:",
         parse_mode="Markdown",
     )
+    # Save the bot's prompt message ID so we can delete it later
+    context.user_data["password_prompt_msg_id"] = prompt_msg.message_id
     return WAITING_PASSWORD
 
 
@@ -117,11 +119,21 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if verify_password(entered):
         set_authenticated(user_id, True)
-        # Delete the message containing the password for security
+        # Delete the user's password message for security
         try:
             await update.message.delete()
         except Exception:
             pass  # deletion may fail if bot lacks permission — not critical
+        # Delete the bot's "please enter password" prompt message
+        prompt_msg_id = context.user_data.get("password_prompt_msg_id")
+        if prompt_msg_id:
+            try:
+                await context.bot.delete_message(
+                    chat_id=update.effective_chat.id,
+                    message_id=prompt_msg_id,
+                )
+            except Exception:
+                pass  # ignore if already deleted or no permission
         await update.message.reply_text(
             "🔓 *Access granted!* Welcome Ashish.",
             parse_mode="Markdown",
