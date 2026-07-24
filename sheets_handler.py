@@ -425,10 +425,10 @@ def get_balance(user_id: str = None) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Goals sheet
+# Goals sheet (Multiple Goals Support)
 # ─────────────────────────────────────────────────────────────────────────────
 
-GOAL_HEADERS = ["Name", "Target", "Saved", "Deadline", "Created", "Status"]
+GOAL_HEADERS = ["Name", "Target", "Saved", "Deadline", "Created", "Status", "LastModified"]
 
 # Purple theme for Goals sheet
 _GOAL_HDR_BG = {"red": 0.494, "green": 0.239, "blue": 0.659}
@@ -441,7 +441,7 @@ def _get_goal_sheet():
     if _goal_sheet:
         return _goal_sheet
 
-    ws = _get_or_create("Goals", rows=10, cols=10)
+    ws = _get_or_create("Goals", rows=1000, cols=10)
 
     existing = ws.row_values(1)
     if existing != GOAL_HEADERS:
@@ -466,6 +466,7 @@ def _style_goal_header(ws):
         _col_width_request(sid, 3, 120),
         _col_width_request(sid, 4, 120),
         _col_width_request(sid, 5, 100),
+        _col_width_request(sid, 6, 120),
         _row_height_request(sid, 0, 1, 32),
         {
             "repeatCell": {
@@ -492,8 +493,8 @@ def _style_goal_header(ws):
     logger.info("Goal sheet header styled")
 
 
-def _style_goal_data_row(ws):
-    """Style the single data row (row 2) of the Goals sheet."""
+def _style_goal_data_rows(ws, start_row: int = 2, end_row: int = 3):
+    """Style data rows of the Goals sheet."""
     ss  = _connect()
     sid = ws.id
 
@@ -501,7 +502,8 @@ def _style_goal_data_row(ws):
         "repeatCell": {
             "range": {
                 "sheetId": sid,
-                "startRowIndex": 1, "endRowIndex": 2,
+                "startRowIndex": start_row - 1,
+                "endRowIndex": end_row,
                 "startColumnIndex": 0,
                 "endColumnIndex": len(GOAL_HEADERS),
             },
@@ -518,25 +520,64 @@ def _style_goal_data_row(ws):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Public Goal API
+# Public Goal API — Multiple Goals
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_goal() -> dict | None:
-    """Return the current active goal as a dict, or None if no active goal."""
+def get_all_goals(status_filter: str = None) -> list[dict]:
+    """
+    Get all goals from the Goals sheet.
+    status_filter: None (all), "active", "completed", "deleted"
+    Returns a list of goal dicts sorted by Created date (newest first).
+    """
     ws   = _get_goal_sheet()
     rows = ws.get_all_values()
-    if len(rows) < 2 or not any(rows[1]):
-        return None
-    goal = dict(zip(GOAL_HEADERS, rows[1]))
-    if goal.get("Status", "").strip().lower() != "active":
-        return None
-    return goal
+    
+    if len(rows) < 2:
+        return []
+    
+    goals = []
+    for row in rows[1:]:
+        if not any(row):  # skip empty rows
+            continue
+        if len(row) < len(GOAL_HEADERS):
+            row = row + [""] * (len(GOAL_HEADERS) - len(row))
+        goal = dict(zip(GOAL_HEADERS, row))
+        
+        if status_filter:
+            if goal.get("Status", "").strip().lower() != status_filter.lower():
+                continue
+        
+        goals.append(goal)
+    
+    # Sort by Created date (newest first)
+    goals.sort(key=lambda g: g.get("Created", ""), reverse=True)
+    return goals
+
+
+def get_goal_by_name(name: str) -> dict | None:
+    """Get a specific goal by name (case-insensitive). Returns None if not found."""
+    goals = get_all_goals()
+    name_lower = name.strip().lower()
+    for goal in goals:
+        if goal.get("Name", "").strip().lower() == name_lower:
+            return goal
+    return None
+
+
+def get_active_goals() -> list[dict]:
+    """Get all active (non-completed, non-deleted) goals."""
+    return get_all_goals(status_filter="active")
+
+
+def get_completed_goals() -> list[dict]:
+    """Get all completed goals."""
+    return get_all_goals(status_filter="completed")
 
 
 def create_goal(name: str, target: float, deadline: str = "") -> dict:
     """
-    Create a new goal, overwriting any existing one (only one at a time).
-    deadline should be 'YYYY-MM-DD' or empty string.
+    Create a new goal and append it to the Goals sheet.
+    Multiple goals are supported — no replacement.
     Returns the newly created goal dict.
     """
     global _goal_sheet
@@ -550,67 +591,76 @@ def create_goal(name: str, target: float, deadline: str = "") -> dict:
         deadline.strip(),
         now_ist,
         "active",
+        now_ist,
     ]
 
+    ws.append_row(row, value_input_option="RAW")
+    
+    _goal_sheet = None  # invalidate cache
+    
+    # Style the new row
     all_rows = ws.get_all_values()
-    if len(all_rows) >= 2:
-        ws.update("A2", [row], value_input_option="RAW")
-    else:
-        ws.append_row(row, value_input_option="RAW")
-
-    _goal_sheet = None  # invalidate cache so get_goal re-reads fresh data
-    _style_goal_data_row(_get_goal_sheet())
-    return get_goal()
+    new_row_idx = len(all_rows)
+    _style_goal_data_rows(ws, start_row=new_row_idx, end_row=new_row_idx + 1)
+    
+    return get_goal_by_name(name) or dict(zip(GOAL_HEADERS, row))
 
 
-def add_to_goal(amount: float, username: str = "goal") -> tuple[dict | None, bool]:
+def add_to_goal(goal_name: str, amount: float, username: str = "goal") -> tuple[dict | None, bool]:
     """
-    Add amount toward the current goal's Saved total.
-
+    Add amount toward a specific goal's Saved total (by goal name).
+    
     - Only accepts deposits up to the remaining amount needed (target - saved).
-      Any overpayment is rejected with a clear error tuple (None, False, overpay_msg).
-      Callers receive (goal_dict, just_completed) — overpayment is handled in bot layer.
     - Logs every deposit as a 'Goal Saving' expense transaction.
-    - On completion logs the full saved amount as 'Goal Achieved' income.
-
+    - On completion, marks status as "completed" but does NOT auto-book income.
+    
     Returns (updated_goal_dict, just_completed).
-    Returns (None, False) if no active goal exists.
+    Returns (None, False) if goal not found or already completed.
     """
     global _goal_sheet
-    ws   = _get_goal_sheet()
-
-    # Read directly from sheet so we catch the goal even mid-session
-    rows = ws.get_all_values()
-    if len(rows) < 2 or not any(rows[1]):
+    ws = _get_goal_sheet()
+    
+    goal = get_goal_by_name(goal_name)
+    if not goal:
         return None, False
-    goal = dict(zip(GOAL_HEADERS, rows[1]))
-    # Allow deposit if active OR already completed (so bot can show the right message)
+    
     status = goal.get("Status", "").strip().lower()
-    if status not in ("active", "completed"):
+    if status != "active":
         return None, False
-
-    goal_name  = goal.get("Name", "Goal")
+    
     prev_saved = float(goal.get("Saved", 0))
     target     = float(goal.get("Target", 0))
-
-    # Block deposits once the goal is already completed
-    if status == "completed" or prev_saved >= target:
-        return None, False
-
+    
     # Cap the deposit at the remaining amount needed
     remaining = round(target - prev_saved, 2)
     deposit   = round(min(amount, remaining), 2)
     new_saved = round(prev_saved + deposit, 2)
-
-    # ── 1. Update the Goals sheet ────────────────────────────────────────────
-    ws.update("C2", [[new_saved]], value_input_option="RAW")
-
+    
+    # ── 1. Find and update the goal row in the sheet ────────────────────────
+    all_rows = ws.get_all_values()
+    goal_row_idx = None
+    
+    for i, row in enumerate(all_rows[1:], start=2):  # start from row 2
+        if len(row) > 0 and row[0].strip().lower() == goal_name.strip().lower():
+            goal_row_idx = i
+            break
+    
+    if goal_row_idx is None:
+        return None, False
+    
+    # Update Saved amount
+    ws.update(f"C{goal_row_idx}", [[new_saved]], value_input_option="RAW")
+    
+    # Update LastModified
+    now_ist = datetime.now(_IST).strftime("%d-%m-%Y")
+    ws.update(f"G{goal_row_idx}", [[now_ist]], value_input_option="RAW")
+    
     just_completed = new_saved >= target
     if just_completed:
-        ws.update("F2", [["completed"]], value_input_option="RAW")
-
+        ws.update(f"F{goal_row_idx}", [["completed"]], value_input_option="RAW")
+    
     _goal_sheet = None  # invalidate cache
-
+    
     # ── 2. Log deposit as a transaction (Goal Saving) ────────────────────────
     now_ist = datetime.now(_IST)
     deposit_row = {
@@ -623,52 +673,61 @@ def add_to_goal(amount: float, username: str = "goal") -> tuple[dict | None, boo
         "user":      username,
     }
     append_transaction(deposit_row)
-
-    # ── 3. On completion, log full saved amount as income ────────────────────
+    
+    # Return updated goal
+    goal["Saved"] = str(new_saved)
     if just_completed:
-        income_row = {
-            "date":      now_ist.strftime("%d-%m-%Y"),
-            "timestamp": now_ist.strftime("%I:%M:%S %p"),
-            "type":      "income",
-            "category":  "Goal Achieved",
-            "amount":    new_saved,
-            "note":      f"Goal completed: {goal_name}",
-            "user":      username,
-        }
-        append_transaction(income_row)
-
-    # Return a snapshot dict (goal is "completed" so get_goal() returns None)
-    goal["Saved"]  = str(new_saved)
-    goal["Status"] = "completed" if just_completed else "active"
+        goal["Status"] = "completed"
+    goal["LastModified"] = now_ist.strftime("%d-%m-%Y")
+    
     return goal, just_completed
 
 
-def delete_goal(username: str = "goal") -> bool:
+def break_goal(goal_name: str, username: str = "goal") -> bool:
     """
-    Clear the current goal row.
-    If any amount was already saved, log it as income so the deposited
-    money flows back into the user's net balance.
+    Delete/break a goal and refund any saved amount to net balance as 'Goal Refund' income.
+    Marks the goal as "deleted" instead of removing the row.
     """
     global _goal_sheet
-    ws   = _get_goal_sheet()
-    goal = get_goal()
-
-    if goal:
-        saved     = float(goal.get("Saved", 0))
-        goal_name = goal.get("Name", "Goal")
-        if saved > 0:
-            now_ist = datetime.now(_IST)
-            refund_row = {
-                "date":      now_ist.strftime("%d-%m-%Y"),
-                "timestamp": now_ist.strftime("%I:%M:%S %p"),
-                "type":      "income",
-                "category":  "Goal Refund",
-                "amount":    round(saved, 2),
-                "note":      f"Goal deleted: {goal_name} (deposited amount refunded)",
-                "user":      username,
-            }
-            append_transaction(refund_row)
-
-    ws.update("A2:F2", [["", "", "", "", "", ""]], value_input_option="RAW")
+    ws = _get_goal_sheet()
+    
+    goal = get_goal_by_name(goal_name)
+    if not goal:
+        return False
+    
+    saved = float(goal.get("Saved", 0))
+    
+    # Find and update the goal row
+    all_rows = ws.get_all_values()
+    goal_row_idx = None
+    
+    for i, row in enumerate(all_rows[1:], start=2):
+        if len(row) > 0 and row[0].strip().lower() == goal_name.strip().lower():
+            goal_row_idx = i
+            break
+    
+    if goal_row_idx is None:
+        return False
+    
+    # Mark as deleted
+    now_ist = datetime.now(_IST).strftime("%d-%m-%Y")
+    ws.update(f"F{goal_row_idx}", [["deleted"]], value_input_option="RAW")
+    ws.update(f"G{goal_row_idx}", [[now_ist]], value_input_option="RAW")
+    
     _goal_sheet = None
+    
+    # If amount was saved, log it as refund income
+    if saved > 0:
+        now_ist_full = datetime.now(_IST)
+        refund_row = {
+            "date":      now_ist_full.strftime("%d-%m-%Y"),
+            "timestamp": now_ist_full.strftime("%I:%M:%S %p"),
+            "type":      "income",
+            "category":  "Goal Refund",
+            "amount":    round(saved, 2),
+            "note":      f"Broken goal: {goal_name} (amount returned to balance)",
+            "user":      username,
+        }
+        append_transaction(refund_row)
+    
     return True

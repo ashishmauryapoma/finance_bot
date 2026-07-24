@@ -72,7 +72,6 @@ EXPENSE_CATEGORIES = [
 INCOME_CATEGORIES = [
     "Salary",
     "Freelancing",
-    "Business Income",
     "Side Hustle",
     "Bonus",
     "Overtime Pay",
@@ -207,14 +206,15 @@ GOAL_DETECT_PROMPT = """You are a financial assistant. The user will send a mess
 
 Your job: Decide if the message is about saving money toward a goal (like "saved 2000 for trip", "goal mein 500 daala", "putting 1000 aside for goa").
 
-If YES — return JSON with the amount saved. Example:
-{"is_goal_deposit": true, "amount": 2000}
+If YES — return JSON with the amount and optional goal name/hint. Example:
+{"is_goal_deposit": true, "amount": 2000, "goal_hint": "trip"}
 
 If NO (it's a regular expense/income, or unrelated) — return:
-{"is_goal_deposit": false, "amount": null}
+{"is_goal_deposit": false, "amount": null, "goal_hint": null}
 
 Rules:
 - Amount must be a plain number. No symbols.
+- goal_hint should be a short keyword or name if mentioned, otherwise null.
 - If no amount is mentioned, return null for amount.
 - Respond ONLY with valid JSON. No markdown, no explanation.
 """
@@ -223,8 +223,8 @@ Rules:
 async def detect_goal_deposit(text: str) -> dict | None:
     """
     Check if the message is a goal saving intent.
-    Returns {"is_goal_deposit": True, "amount": float} or
-            {"is_goal_deposit": False, "amount": None}
+    Returns {"is_goal_deposit": True, "amount": float, "goal_hint": str or None} or
+            {"is_goal_deposit": False, "amount": None, "goal_hint": None}
     Returns None on API error.
     """
     client = _get_client()
@@ -237,7 +237,7 @@ async def detect_goal_deposit(text: str) -> dict | None:
                 {"role": "user",   "content": text},
             ],
             temperature=0.1,
-            max_tokens=60,
+            max_tokens=100,
         )
 
         raw = response.choices[0].message.content.strip()
