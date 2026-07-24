@@ -50,8 +50,7 @@ created → active ──→ completed  (locked state, manual break required)
 - **Net balance display**: Shows current available balance (excluding locked goals)
 - **Active goals breakdown**: Lists all active goals with progress percentages
 - **Completed goals section**: Shows locked goals with total locked amount
-- **Monthly summary**: Income/expense breakdown for current month
-- **Forecasting**: Daily amount needed to reach each deadline
+- **No monthly summary**: Monthly income/expense breakdown removed
 
 ### 4. Command Interface
 Commands follow `/goal [subcommand]` pattern:
@@ -62,7 +61,7 @@ Commands follow `/goal [subcommand]` pattern:
 | `/goal set "Name" \| Amount \| [Deadline]` | Create new goal |
 | `/goal view "Name"` | View specific goal details |
 | `/goal add "Name" Amount` | Manually deposit to goal |
-| `/goal break "Name"` | Delete goal with confirmation, refund balance |
+| `/goal break` | Show interactive goal list with buttons for selection, then confirmation dialog, then break with refund |
 
 ### 5. Natural Language Goal Detection
 - **Smart matching**: Groq extracts goal hint from user message

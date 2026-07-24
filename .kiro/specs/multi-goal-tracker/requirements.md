@@ -78,9 +78,9 @@ This document specifies requirements for adding multiple concurrent savings goal
 1. WHEN the user views their balance THEN THE System SHALL display the net available balance (excluding active goal amounts)
 2. WHEN the user views their balance AND there are active goals THEN THE System SHALL show each active goal with progress bar, saved/target amounts, and days remaining
 3. WHEN the user views their balance AND there are completed goals THEN THE System SHALL show completed goals with "locked" status and total locked amount
-4. WHEN the user views their balance THEN THE System SHALL include this month's income and expense totals
-5. WHEN a goal has a deadline THEN THE System SHALL calculate and display daily amount needed to reach goal by deadline
-6. WHEN a goal has no deadline THEN THE System SHALL display goal without deadline information
+4. WHEN a goal has a deadline THEN THE System SHALL calculate and display daily amount needed to reach goal by deadline
+5. WHEN a goal has no deadline THEN THE System SHALL display goal without deadline information
+6. WHEN the user views their balance THEN THE System SHALL NOT display monthly income, expenses, or net summary
 
 #### Edge Cases
 
@@ -103,7 +103,9 @@ This document specifies requirements for adding multiple concurrent savings goal
 2. WHEN the user enters `/goal set "<name>" | <amount> | [deadline]` THEN THE System SHALL create a new goal with the specified name, target amount, and optional deadline (YYYY-MM-DD format)
 3. WHEN the user enters `/goal view "<name>"` THEN THE System SHALL display detailed information for that specific goal including progress, deadline, days remaining, and daily savings needed
 4. WHEN the user enters `/goal add "<name>" <amount>` THEN THE System SHALL add the specified amount to the named goal's saved amount
-5. WHEN the user enters `/goal break "<name>"` THEN THE System SHALL show a confirmation dialog and delete the goal if confirmed
+5. WHEN the user enters `/goal break` THEN THE System SHALL display an interactive list of all active and completed goals with buttons for each goal
+6. WHEN the user clicks a goal button THEN THE System SHALL show a confirmation dialog with goal name and refund amount
+7. WHEN the user confirms the break THEN THE System SHALL delete the goal, log refund as income transaction, and make funds available in net balance
 
 #### Edge Cases
 
@@ -284,11 +286,13 @@ This document specifies requirements for adding multiple concurrent savings goal
 
 #### Acceptance Criteria
 
-1. WHEN a user executes `/goal break "<name>"` THEN THE System SHALL show a confirmation dialog with the refund amount
-2. WHEN the user confirms goal break THEN THE System SHALL mark the goal status as "deleted"
-3. WHEN the user confirms goal break THEN THE System SHALL create an income transaction with category "Goal Refund" for the saved amount
-4. WHEN the user confirms goal break THEN THE System SHALL make the refunded amount immediately available in net balance
-5. WHEN the user cancels the break confirmation THEN THE System SHALL not modify any goal data
+1. WHEN a user executes `/goal break` THEN THE System SHALL display all active and completed goals as interactive buttons
+2. WHEN the user clicks a goal button THEN THE System SHALL show a confirmation dialog with the goal name and refund amount
+3. WHEN the user confirms the break THEN THE System SHALL mark the goal status as "deleted"
+4. WHEN the user confirms the break THEN THE System SHALL create an income transaction with category "Goal Refund" for the saved amount
+5. WHEN the user confirms the break THEN THE System SHALL make the refunded amount immediately available in net balance
+6. WHEN the user cancels the break confirmation THEN THE System SHALL not modify any goal data
+7. WHEN a goal has zero saved amount THEN THE System SHALL complete the break without creating a transaction
 
 #### Edge Cases
 
@@ -296,6 +300,7 @@ This document specifies requirements for adding multiple concurrent savings goal
 - Breaking a goal should be idempotent (breaking twice returns error on second attempt)
 - Refund should appear immediately in balance (no processing delay)
 - Confirmation dialog should clearly show goal name and refund amount
+- Goal list should show both active and completed goals to select from
 
 ---
 
