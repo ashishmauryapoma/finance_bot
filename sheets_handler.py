@@ -444,60 +444,88 @@ def _get_goal_sheet():
     ws = _get_or_create("Goals", rows=1000, cols=10)
 
     existing = ws.row_values(1)
-    if existing != GOAL_HEADERS:
+    
+    # If sheet is empty or headers don't match, initialize with proper headers
+    if not existing or existing != GOAL_HEADERS:
         ws.clear()
         ws.update("A1", [GOAL_HEADERS], value_input_option="RAW")
         _style_goal_header(ws)
+    else:
+        # Verify all 7 columns are present in existing data
+        # If LastModified column (column 7) is missing, initialize it for existing rows
+        all_rows = ws.get_all_values()
+        if len(all_rows) > 1:  # Has data beyond header
+            needs_update = False
+            for i, row in enumerate(all_rows[1:], start=2):
+                # Pad row if it doesn't have all 7 columns
+                if len(row) < len(GOAL_HEADERS):
+                    # For missing LastModified column, use Created timestamp (column 5)
+                    created_timestamp = row[4] if len(row) > 4 else ""
+                    while len(row) < len(GOAL_HEADERS):
+                        row.append(created_timestamp if len(row) == 6 else "")
+                    ws.update(f"A{i}:G{i}", [row], value_input_option="RAW")
+                    needs_update = True
+            if needs_update:
+                _style_goal_header(ws)
 
     _goal_sheet = ws
     return ws
 
 
 def _style_goal_header(ws):
-    """Apply purple header styling to the Goals sheet."""
+    """Apply purple header styling to all 7 columns of the Goals sheet."""
     ss  = _connect()
     sid = ws.id
 
+    # Column widths for all 7 columns: Name, Target, Saved, Deadline, Created, Status, LastModified
+    col_pxs = [180, 110, 110, 120, 120, 100, 120]
+
     requests = [
         _freeze_request(sid, rows=1),
-        _col_width_request(sid, 0, 180),
-        _col_width_request(sid, 1, 110),
-        _col_width_request(sid, 2, 110),
-        _col_width_request(sid, 3, 120),
-        _col_width_request(sid, 4, 120),
-        _col_width_request(sid, 5, 100),
-        _col_width_request(sid, 6, 120),
-        _row_height_request(sid, 0, 1, 32),
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": sid,
-                    "startRowIndex": 0, "endRowIndex": 1,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": len(GOAL_HEADERS),
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        **_cell_fmt(bg=_GOAL_HDR_BG, fg=_GOAL_HDR_FG,
-                                    bold=True, h_align="CENTER", font_size=11),
-                        "borders": _full_border(
-                            "SOLID", 2, {"red": 0.3, "green": 0.1, "blue": 0.5}
-                        ),
-                    }
-                },
-                "fields": "userEnteredFormat",
-            }
-        },
     ]
+    
+    # Apply column widths for all 7 columns
+    requests += [_col_width_request(sid, i, px) for i, px in enumerate(col_pxs)]
+    
+    # Set header row height
+    requests.append(_row_height_request(sid, 0, 1, 32))
+    
+    # Apply purple header styling to all 7 columns
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sid,
+                "startRowIndex": 0,
+                "endRowIndex": 1,
+                "startColumnIndex": 0,
+                "endColumnIndex": len(GOAL_HEADERS),
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    **_cell_fmt(bg=_GOAL_HDR_BG, fg=_GOAL_HDR_FG,
+                                bold=True, h_align="CENTER", font_size=11),
+                    "borders": _full_border(
+                        "SOLID", 2, {"red": 0.3, "green": 0.1, "blue": 0.5}
+                    ),
+                }
+            },
+            "fields": "userEnteredFormat",
+        }
+    })
+    
     ss.batch_update({"requests": requests})
     logger.info("Goal sheet header styled")
 
 
 def _style_goal_data_rows(ws, start_row: int = 2, end_row: int = 3):
-    """Style data rows of the Goals sheet."""
+    """
+    Style data rows of the Goals sheet with all 7 columns.
+    Apply alternating row background colors, bold right-aligned saved amounts, and borders.
+    """
     ss  = _connect()
     sid = ws.id
 
+    # Apply base styling (background + borders) to all 7 columns
     requests = [{
         "repeatCell": {
             "range": {
@@ -516,6 +544,27 @@ def _style_goal_data_rows(ws, start_row: int = 2, end_row: int = 3):
             "fields": "userEnteredFormat",
         }
     }]
+    
+    # Apply special styling to Saved column (index 2): bold and right-aligned
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sid,
+                "startRowIndex": start_row - 1,
+                "endRowIndex": end_row,
+                "startColumnIndex": 2,  # Saved column
+                "endColumnIndex": 3,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    **_cell_fmt(bg=_GOAL_ROW_BG, bold=True, h_align="RIGHT", font_size=10),
+                    "borders": _full_border(),
+                }
+            },
+            "fields": "userEnteredFormat",
+        }
+    })
+    
     ss.batch_update({"requests": requests})
 
 
@@ -523,11 +572,12 @@ def _style_goal_data_rows(ws, start_row: int = 2, end_row: int = 3):
 # Public Goal API — Multiple Goals
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_all_goals(status_filter: str = None) -> list[dict]:
+def get_all_goals_multi(status_filter: str = None) -> list[dict]:
     """
     Get all goals from the Goals sheet.
     status_filter: None (all), "active", "completed", "deleted"
     Returns a list of goal dicts sorted by Created date (newest first).
+    Each dict has keys: Name, Target, Saved, Deadline, Created, Status, LastModified
     """
     ws   = _get_goal_sheet()
     rows = ws.get_all_values()
@@ -554,14 +604,39 @@ def get_all_goals(status_filter: str = None) -> list[dict]:
     return goals
 
 
-def get_goal_by_name(name: str) -> dict | None:
-    """Get a specific goal by name (case-insensitive). Returns None if not found."""
-    goals = get_all_goals()
+def get_all_goals(status_filter: str = None) -> list[dict]:
+    """
+    Get all goals from the Goals sheet.
+    Backward compatibility wrapper for get_all_goals_multi().
+    """
+    return get_all_goals_multi(status_filter)
+
+
+def get_goal_by_name_multi(name: str) -> dict | None:
+    """
+    Get a specific goal by exact name (case-insensitive).
+    Returns goal dict with all 7 columns if found, None otherwise.
+    """
+    goals = get_all_goals_multi()
     name_lower = name.strip().lower()
     for goal in goals:
         if goal.get("Name", "").strip().lower() == name_lower:
             return goal
     return None
+
+
+def get_goal_by_name(name: str) -> dict | None:
+    """Get a specific goal by name (case-insensitive). Returns None if not found."""
+    return get_goal_by_name_multi(name)
+
+
+def validate_goal_uniqueness(name: str) -> bool:
+    """
+    Check if goal with given name already exists (case-insensitive).
+    Returns True if name is unique and can be used.
+    Returns False if name already exists.
+    """
+    return get_goal_by_name_multi(name) is None
 
 
 def get_active_goals() -> list[dict]:

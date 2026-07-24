@@ -6,20 +6,20 @@ Transform the finance bot from single-goal to multi-goal support by extending th
 
 ## Tasks
 
-- [ ] 1. Foundation: Update Goals Sheet Schema to 7 Columns
-  - [ ] 1.1 Update `_get_goal_sheet()` to verify and initialize 7-column structure
+- [x] 1. Foundation: Update Goals Sheet Schema to 7 Columns
+  - [x] 1.1 Update `_get_goal_sheet()` to verify and initialize 7-column structure
     - Add headers: Name, Target, Saved, Deadline, Created, Status, LastModified
     - Verify exact column count during sheet access
     - Create sheet with full 7-column structure if not exists
     - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7_
 
-  - [ ] 1.2 Migrate `_style_goal_header()` to handle 7-column layout
+  - [x] 1.2 Migrate `_style_goal_header()` to handle 7-column layout
     - Update header formatting for columns 1–7
     - Apply consistent cell styling across all 7 columns
     - Set appropriate column widths for new columns (Status, LastModified)
     - _Requirements: 6.1_
 
-  - [ ] 1.3 Update `_style_goal_data_rows()` for 7-column data formatting
+  - [x] 1.3 Update `_style_goal_data_rows()` for 7-column data formatting
     - Format Status column with alignment and text styling
     - Format LastModified column with timestamp styling
     - Ensure consistent formatting across multi-row data
@@ -30,20 +30,20 @@ Transform the finance bot from single-goal to multi-goal support by extending th
     - **Validates: Requirements 6.1, 6.2**
 
 - [ ] 2. Data Layer: Implement Multi-Goal Query and Modification Functions
-  - [ ] 2.1 Implement `get_all_goals_multi()` to retrieve all goals with status filtering
+  - [ ] **[IN PROGRESS]** 2.1 Implement `get_all_goals_multi()` to retrieve all goals with status filtering
     - Query all rows in Goals sheet with 7-column structure
     - Support optional status filter (active, completed, deleted)
     - Return list of dicts with all 7 columns
     - Handle empty sheet gracefully
     - _Requirements: 11.1, 11.2, 11.3, 11.4_
 
-  - [ ] 2.2 Implement `get_goal_by_name_multi()` for case-insensitive goal lookup
+  - [ ] **[IN PROGRESS]** 2.2 Implement `get_goal_by_name_multi()` for case-insensitive goal lookup
     - Search Goals sheet by Name column (case-insensitive matching)
     - Return complete goal dict or None if not found
     - Support partial name matching for goal hints
     - _Requirements: 11.2_
 
-  - [ ] 2.3 Implement `validate_goal_uniqueness()` to prevent duplicate goal names
+  - [ ] **[IN PROGRESS]** 2.3 Implement `validate_goal_uniqueness()` to prevent duplicate goal names
     - Check if goal name already exists (case-insensitive)
     - Return boolean and error message if duplicate
     - Validate before creating new goals
