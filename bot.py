@@ -20,11 +20,12 @@ from groq_handler import extract_transaction, detect_goal_deposit
 from sheets_handler import (
     append_transaction, get_recent_transactions,
     get_summary, get_balance,
-    get_goal, create_goal, add_to_goal, delete_goal,
+    get_all_goals, get_goal_by_name, get_active_goals, get_completed_goals,
+    create_goal, add_to_goal, break_goal,
 )
 from auth import verify_password, is_authenticated, set_authenticated
 from utils import format_summary, format_recent
-from goal_handler import format_goal_card, format_goal_complete
+from goal_handler import format_goal_card, format_goal_complete, format_goals_list, format_goal_details
 
 load_dotenv()
 
@@ -179,16 +180,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         # ── Step 1: Check if message is a goal deposit ────────────────────────
-        active_goal = get_goal()
-        if active_goal:
+        active_goals = get_active_goals()
+        if active_goals:
             goal_check = await detect_goal_deposit(text)
             if goal_check and goal_check.get("is_goal_deposit") and goal_check.get("amount"):
                 amount = float(goal_check["amount"])
-
-                # ── Check for overpayment ──────────────────────────────────
-                saved_so_far = float(active_goal.get("Saved", 0))
-                target_amt   = float(active_goal.get("Target", 0))
+                goal_hint = goal_check.get("goal_hint", "").strip().lower() if goal_check.get("goal_hint") else None
+                
+                # Try to match goal hint to a goal name
+                matched_goal = None
+                if goal_hint:
+                    for goal in active_goals:
+                        if goal_hint in goal.get("Name", "").lower():
+                            matched_goal = goal
+                            break
+                
+                # If multiple goals and no match, show selection buttons
+                if len(active_goals) > 1 and not matched_goal:
+                    context.user_data["pending_goal_deposit"] = {
+                        "amount": amount,
+                    }
+                    
+                    keyboard = [
+                        [InlineKeyboardButton(
+                            f"💰 {goal['Name']} (₹{float(goal.get('Saved', 0)):,.0f}/₹{float(goal.get('Target', 0)):,.0f})",
+                            callback_data=f"goal_deposit:{goal['Name']}"
+                        )]
+                        for goal in active_goals
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    
+                    await update.message.reply_text(
+                        f"💡 Which goal should I add ₹{amount:,.2f} to?",
+                        reply_markup=reply_markup,
+                    )
+                    return
+                
+                # Single goal or matched goal
+                target_goal = matched_goal or active_goals[0]
+                goal_name = target_goal["Name"]
+                
+                # Check for overpayment
+                saved_so_far = float(target_goal.get("Saved", 0))
+                target_amt   = float(target_goal.get("Target", 0))
                 remaining    = round(target_amt - saved_so_far, 2)
+                
                 if amount > remaining:
                     await update.message.reply_text(
                         f"⚠️ *Deposit failed — amount exceeds goal limit!*\n\n"
@@ -199,15 +235,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         parse_mode="Markdown",
                     )
                     return
-
-                goal, just_completed = add_to_goal(amount, username)
-
+                
+                goal, just_completed = add_to_goal(goal_name, amount, username)
+                
                 if just_completed:
-                    saved  = float(goal.get("Saved", 0))
                     await update.message.reply_text(
                         f"🎯 *Goal deposit saved!* ₹{amount:,.2f} logged.\n\n"
-                        f"{format_goal_complete(goal)}\n\n"
-                        f"💡 ₹{saved:,.2f} auto-added to your income as *Goal Achieved*.",
+                        f"{format_goal_complete(goal)}",
                         parse_mode="Markdown",
                     )
                 else:
@@ -282,7 +316,53 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data    = get_balance(user_id)
         net_all = data["net_balance"]
         icon    = "🟢" if net_all >= 0 else "🔴"
-        msg     = f"{icon} *Net Balance: ₹{net_all:,.2f}*"
+        
+        # Gather goal info
+        active_goals = get_active_goals()
+        completed_goals = get_completed_goals()
+        
+        total_locked = sum(float(g.get("Saved", 0)) for g in completed_goals)
+        total_saved_active = sum(float(g.get("Saved", 0)) for g in active_goals)
+        
+        lines = [
+            f"{icon} *Net Balance: ₹{net_all:,.2f}*",
+            f"{'─' * 32}",
+        ]
+        
+        # Current month summary
+        lines.append(
+            f"📅 *This Month:*\n"
+            f"   📥 Income: ₹{data.get('month_income', 0):,.2f}\n"
+            f"   📤 Expenses: ₹{data.get('month_expense', 0):,.2f}\n"
+            f"   Net: ₹{data.get('month_net', 0):,.2f}"
+        )
+        
+        # Active goals breakdown
+        if active_goals:
+            lines.append(f"\n✅ *Active Goals ({len(active_goals)}):*")
+            for goal in active_goals:
+                name = goal.get("Name", "")
+                saved = float(goal.get("Saved", 0))
+                target = float(goal.get("Target", 0))
+                remaining = target - saved
+                pct = (saved / target * 100) if target > 0 else 0
+                lines.append(
+                    f"   • {name}: ₹{saved:,.0f}/₹{target:,.0f} ({pct:.0f}%) — ₹{remaining:,.0f} to go"
+                )
+            lines.append(f"   💰 Total in Active: ₹{total_saved_active:,.2f}")
+        
+        # Completed goals (locked amount)
+        if completed_goals:
+            lines.append(f"\n✨ *Completed Goals ({len(completed_goals)}):*")
+            for goal in completed_goals:
+                name = goal.get("Name", "")
+                saved = float(goal.get("Saved", 0))
+                lines.append(f"   🔒 {name}: ₹{saved:,.2f} (locked)")
+            lines.append(f"   🔐 Total Locked: ₹{total_locked:,.2f}")
+        
+        lines.append(f"\n{'─' * 32}")
+        
+        msg = "\n".join(lines)
         await update.message.reply_text(msg, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Balance error: {e}")
@@ -296,12 +376,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📋 *Transactions*\n"
         "/recent — Last 10 entries\n"
         "/summary — Monthly summary\n"
-        "/balance — Net balance\n\n"
-        "🎯 *Goal Tracker*\n"
-        "/goal — View current goal\n"
+        "/balance — Net balance + goals breakdown\n\n"
+        "🎯 *Goal Tracker (Multiple Goals)*\n"
+        "/goal — Show all goals\n"
+        "/goal list — List all goals\n"
         "/goal set <name> \\| <amount> \\| <deadline> — Create goal\n"
-        "/goal add <amount> — Add savings to goal\n"
-        "/goal delete — Remove current goal\n\n"
+        "/goal view <name> — View specific goal\n"
+        "/goal add <name> <amount> — Add savings to goal\n"
+        "/goal break <name> — Delete goal & refund balance\n\n"
         "🔐 *Account*\n"
         "/logout — Log out\n"
         "/help — This message",
@@ -314,31 +396,31 @@ async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Goal command handlers
+# Goal command handlers — Multiple Goals Support
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _goal_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show the current goal progress card."""
+    """Show all goals (active and completed) with detailed breakdown."""
     try:
-        goal = get_goal()
-        if not goal:
-            await update.message.reply_text(
-                "🎯 *No active goal.*\n\n"
-                "Create one with:\n"
-                "`/goal set <name> | <amount> | <deadline>`",
-                parse_mode="Markdown",
-            )
-            return
-        await update.message.reply_text(format_goal_card(goal), parse_mode="Markdown")
+        active_goals = get_active_goals()
+        completed_goals = get_completed_goals()
+        
+        msg = format_goals_list(active_goals, completed_goals)
+        await update.message.reply_text(msg, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"goal_status error: {e}", exc_info=True)
-        await update.message.reply_text("⚠️ Could not fetch goal. Try again.")
+        await update.message.reply_text("⚠️ Could not fetch goals. Try again.")
+
+
+async def _goal_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Alias for _goal_status."""
+    await _goal_status(update, context)
 
 
 async def _goal_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /goal set <name> | <amount> | <deadline(optional)>
-    If a goal already exists, shows inline Yes/No buttons for confirmation.
+    Create a new goal (no replacement, add to list).
     """
     raw   = " ".join(context.args[1:]) if len(context.args) > 1 else ""
     parts = [p.strip() for p in raw.split("|")]
@@ -370,35 +452,16 @@ async def _goal_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        existing = get_goal()
+        # Check if goal with this name already exists
+        existing = get_goal_by_name(name)
         if existing:
-            # Store the new goal details and show inline buttons
-            context.user_data["pending_goal"] = {
-                "name": name, "target": target, "deadline": deadline
-            }
-            saved = float(existing.get("Saved", 0))
-            
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Yes", callback_data="goal_replace:yes"),
-                    InlineKeyboardButton("❌ No", callback_data="goal_replace:no"),
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
             await update.message.reply_text(
-                f"⚠️ *You already have an active goal:*\n\n"
-                f"🎯 *{existing['Name']}* — ₹{float(existing['Target']):,.0f} target\n"
-                f"💰 Saved so far: ₹{saved:,.2f}\n\n"
-                f"Replacing it will *refund ₹{saved:,.2f}* back to your net balance "
-                f"and start fresh with *{name}*.\n\n"
-                f"Confirm replacement?",
+                f"⚠️ *Goal '{name}' already exists!*\n\n"
+                f"Use a different name or use `/goal break {name}` to delete it first.",
                 parse_mode="Markdown",
-                reply_markup=reply_markup,
             )
             return
 
-        # No existing goal — create immediately
         goal = create_goal(name, target, deadline)
         await update.message.reply_text(
             f"✅ *Goal created!*\n\n{format_goal_card(goal)}",
@@ -409,95 +472,22 @@ async def _goal_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Could not create goal. Try again.")
 
 
-async def _goal_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle all inline button callbacks for goal confirmations."""
-    query = update.callback_query
-    await query.answer()  # removes the loading spinner on the button
-
-    data   = query.data            # e.g. "goal_replace:yes" or "goal_delete:no"
-    action, choice = data.split(":")
-
-    username = (
-        query.from_user.username
-        or query.from_user.first_name
-        or "goal"
-    )
-
-    # ── Goal replacement ──────────────────────────────────────────────────────
-    if action == "goal_replace":
-        if choice == "yes":
-            pending = context.user_data.pop("pending_goal", None)
-            if not pending:
-                await query.edit_message_text(
-                    "⚠️ Session expired. Please run `/goal set` again."
-                )
-                return
-            try:
-                delete_goal(username)
-                goal = create_goal(pending["name"], pending["target"], pending["deadline"])
-                await query.edit_message_text(
-                    f"✅ *Old goal removed & balance refunded.*\n\n"
-                    f"🎯 *New goal created!*\n\n{format_goal_card(goal)}",
-                    parse_mode="Markdown",
-                )
-            except Exception as e:
-                logger.error(f"goal_replace callback error: {e}", exc_info=True)
-                await query.edit_message_text("⚠️ Something went wrong. Try again.")
-        else:
-            context.user_data.pop("pending_goal", None)
-            await query.edit_message_text(
-                "❌ *Cancelled.* Your current goal is still active.",
-                parse_mode="Markdown",
-            )
-
-    # ── Goal deletion ─────────────────────────────────────────────────────────
-    elif action == "goal_delete":
-        if choice == "yes":
-            try:
-                goal = get_goal()
-                if not goal:
-                    await query.edit_message_text("🎯 No active goal to delete.")
-                    return
-                name  = goal["Name"]
-                saved = float(goal.get("Saved", 0))
-                delete_goal(username)
-                if saved > 0:
-                    await query.edit_message_text(
-                        f"🗑️ Goal *{name}* deleted.\n\n"
-                        f"💰 ₹{saved:,.2f} you had deposited has been refunded to your balance.",
-                        parse_mode="Markdown",
-                    )
-                else:
-                    await query.edit_message_text(
-                        f"🗑️ Goal *{name}* deleted.",
-                        parse_mode="Markdown",
-                    )
-            except Exception as e:
-                logger.error(f"goal_delete callback error: {e}", exc_info=True)
-                await query.edit_message_text("⚠️ Could not delete goal. Try again.")
-        else:
-            await query.edit_message_text(
-                "❌ *Cancelled.* Your goal is safe.",
-                parse_mode="Markdown",
-            )
-
-
 async def _goal_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /goal add <amount>
-    Add money toward the active goal.
-    Logs the deposit as a transaction and auto-books income on completion.
+    /goal add <name> <amount>
+    Add money toward a specific goal.
     """
-    if len(context.args) < 2:
+    if len(context.args) < 3:
         await update.message.reply_text(
-            "⚠️ *Usage:* `/goal add <amount>`\n"
-            "*Example:* `/goal add 2000`",
+            "⚠️ *Usage:* `/goal add <goal_name> <amount>`\n"
+            "*Example:* `/goal add \"Goa Trip\" 2000`",
             parse_mode="Markdown",
         )
         return
 
+    goal_name = context.args[1]
     try:
-        amount = float(context.args[1].replace(",", "").replace("₹", "").strip())
+        amount = float(context.args[2].replace(",", "").replace("₹", "").strip())
     except ValueError:
         await update.message.reply_text(
             "⚠️ Invalid amount. Use a plain number like `2000`.",
@@ -516,47 +506,58 @@ async def _goal_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        # ── Check for overpayment before depositing ───────────────────────────
-        current_goal = get_goal()
-        if current_goal:
-            saved_so_far = float(current_goal.get("Saved", 0))
-            target_amt   = float(current_goal.get("Target", 0))
-            remaining    = round(target_amt - saved_so_far, 2)
-            if amount > remaining:
-                await update.message.reply_text(
-                    f"⚠️ *Deposit failed — amount exceeds goal limit!*\n\n"
-                    f"💰 Already saved: ₹{saved_so_far:,.2f}\n"
-                    f"🎯 Target: ₹{target_amt:,.2f}\n"
-                    f"📌 *Only ₹{remaining:,.2f} more needed* to complete this goal.\n\n"
-                    f"Please deposit ₹{remaining:,.2f} or less.",
-                    parse_mode="Markdown",
-                )
-                return
-
-        goal, just_completed = add_to_goal(amount, username)
-
-        if goal is None:
+        goal = get_goal_by_name(goal_name)
+        if not goal:
             await update.message.reply_text(
-                "🎯 No active goal or goal is already completed.\n"
-                "Create a new one with `/goal set`.",
+                f"❌ Goal '{goal_name}' not found.\n\n"
+                f"Use `/goal list` to see all goals.",
                 parse_mode="Markdown",
             )
             return
 
-        saved  = float(goal.get("Saved", 0))
-        target = float(goal.get("Target", 0))
+        if goal.get("Status", "").strip().lower() != "active":
+            await update.message.reply_text(
+                f"❌ Goal '{goal_name}' is not active.\n\n"
+                f"Use `/goal list` to view goal status.",
+                parse_mode="Markdown",
+            )
+            return
+
+        # Check for overpayment
+        saved_so_far = float(goal.get("Saved", 0))
+        target_amt   = float(goal.get("Target", 0))
+        remaining    = round(target_amt - saved_so_far, 2)
+        
+        if amount > remaining:
+            await update.message.reply_text(
+                f"⚠️ *Deposit failed — amount exceeds goal limit!*\n\n"
+                f"💰 Already saved: ₹{saved_so_far:,.2f}\n"
+                f"🎯 Target: ₹{target_amt:,.2f}\n"
+                f"📌 *Only ₹{remaining:,.2f} more needed* to complete this goal.\n\n"
+                f"Please deposit ₹{remaining:,.2f} or less.",
+                parse_mode="Markdown",
+            )
+            return
+
+        updated_goal, just_completed = add_to_goal(goal_name, amount, username)
+
+        if updated_goal is None:
+            await update.message.reply_text(
+                f"❌ Could not update goal. Please try again.",
+                parse_mode="Markdown",
+            )
+            return
 
         if just_completed:
             await update.message.reply_text(
                 f"➕ *Deposit logged*\n\n"
-                f"{format_goal_complete(goal)}\n\n"
-                f"💡 ₹{saved:,.2f} auto-added to your income as *Goal Achieved*.",
+                f"{format_goal_complete(updated_goal)}",
                 parse_mode="Markdown",
             )
         else:
             await update.message.reply_text(
                 f"➕ *₹{amount:,.2f} deposited & logged*\n\n"
-                f"{format_goal_card(goal)}",
+                f"{format_goal_card(updated_goal)}",
                 parse_mode="Markdown",
             )
     except Exception as e:
@@ -564,21 +565,171 @@ async def _goal_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Could not update goal. Try again.")
 
 
-async def _goal_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/goal delete — ask confirmation via inline buttons before deleting."""
+async def _goal_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /goal view <name>
+    Show detailed view of a specific goal.
+    """
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "⚠️ *Usage:* `/goal view <goal_name>`\n"
+            "*Example:* `/goal view \"Goa Trip\"`",
+            parse_mode="Markdown",
+        )
+        return
+
+    goal_name = context.args[1]
+    
     try:
-        goal = get_goal()
+        goal = get_goal_by_name(goal_name)
         if not goal:
-            await update.message.reply_text("🎯 No active goal to delete.")
+            await update.message.reply_text(
+                f"❌ Goal '{goal_name}' not found.\n\n"
+                f"Use `/goal list` to see all goals.",
+                parse_mode="Markdown",
+            )
             return
 
-        name  = goal["Name"]
+        msg = format_goal_details(goal)
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"goal_view error: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Could not fetch goal. Try again.")
+
+
+async def _goal_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline button callbacks for goal selection and confirmation."""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    
+    # ── Goal deposit selection ────────────────────────────────────────────────
+    if data.startswith("goal_deposit:"):
+        goal_name = data.replace("goal_deposit:", "", 1)
+        pending = context.user_data.pop("pending_goal_deposit", None)
+        
+        if not pending:
+            await query.edit_message_text("⚠️ Session expired. Please try again.")
+            return
+        
+        amount = pending.get("amount", 0)
+        username = (
+            query.from_user.username
+            or query.from_user.first_name
+            or "goal"
+        )
+        
+        try:
+            goal = get_goal_by_name(goal_name)
+            if not goal:
+                await query.edit_message_text(f"❌ Goal '{goal_name}' not found.")
+                return
+            
+            # Check for overpayment
+            saved_so_far = float(goal.get("Saved", 0))
+            target_amt   = float(goal.get("Target", 0))
+            remaining    = round(target_amt - saved_so_far, 2)
+            
+            if amount > remaining:
+                await query.edit_message_text(
+                    f"⚠️ *Deposit failed — amount exceeds limit!*\n"
+                    f"Only ₹{remaining:,.2f} more needed.",
+                    parse_mode="Markdown",
+                )
+                return
+            
+            updated_goal, just_completed = add_to_goal(goal_name, amount, username)
+            
+            if just_completed:
+                await query.edit_message_text(
+                    f"✅ ₹{amount:,.2f} added to *{goal_name}*\n\n"
+                    f"{format_goal_complete(updated_goal)}",
+                    parse_mode="Markdown",
+                )
+            else:
+                await query.edit_message_text(
+                    f"✅ ₹{amount:,.2f} added to *{goal_name}*\n\n"
+                    f"{format_goal_card(updated_goal)}",
+                    parse_mode="Markdown",
+                )
+        except Exception as e:
+            logger.error(f"goal_deposit callback error: {e}", exc_info=True)
+            await query.edit_message_text("⚠️ Something went wrong. Try again.")
+    
+    # ── Goal break confirmation ────────────────────────────────────────────────
+    elif data.startswith("goal_break:"):
+        goal_name = data.replace("goal_break:", "", 1)
+        action = data.split("|")[1] if "|" in data else ""
+        
+        if action == "yes":
+            username = (
+                query.from_user.username
+                or query.from_user.first_name
+                or "goal"
+            )
+            
+            try:
+                goal = get_goal_by_name(goal_name)
+                if not goal:
+                    await query.edit_message_text(f"❌ Goal '{goal_name}' not found.")
+                    return
+                
+                saved = float(goal.get("Saved", 0))
+                break_goal(goal_name, username)
+                
+                if saved > 0:
+                    await query.edit_message_text(
+                        f"🗑️ Goal *{goal_name}* deleted.\n\n"
+                        f"💰 ₹{saved:,.2f} refunded to your balance.",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await query.edit_message_text(
+                        f"🗑️ Goal *{goal_name}* deleted.",
+                        parse_mode="Markdown",
+                    )
+            except Exception as e:
+                logger.error(f"goal_break callback error: {e}", exc_info=True)
+                await query.edit_message_text("⚠️ Could not delete goal. Try again.")
+        else:
+            await query.edit_message_text(
+                f"❌ *Cancelled.* Goal *{goal_name}* is safe.",
+                parse_mode="Markdown",
+            )
+
+
+async def _goal_break(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /goal break <name>
+    Ask confirmation before breaking a goal.
+    """
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "⚠️ *Usage:* `/goal break <goal_name>`\n"
+            "*Example:* `/goal break \"Goa Trip\"`",
+            parse_mode="Markdown",
+        )
+        return
+
+    goal_name = context.args[1]
+    
+    try:
+        goal = get_goal_by_name(goal_name)
+        if not goal:
+            await update.message.reply_text(
+                f"❌ Goal '{goal_name}' not found.\n\n"
+                f"Use `/goal list` to see all goals.",
+                parse_mode="Markdown",
+            )
+            return
+
         saved = float(goal.get("Saved", 0))
 
         keyboard = [
             [
-                InlineKeyboardButton("✅ Yes, delete it", callback_data="goal_delete:yes"),
-                InlineKeyboardButton("❌ No, keep it",    callback_data="goal_delete:no"),
+                InlineKeyboardButton("✅ Yes, break it", callback_data=f"goal_break:{goal_name}|yes"),
+                InlineKeyboardButton("❌ No, keep it",    callback_data=f"goal_break:{goal_name}|no"),
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -589,23 +740,25 @@ async def _goal_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         await update.message.reply_text(
-            f"🗑️ *Delete goal \"{name}\"?*{refund_note}\n\n"
+            f"🗑️ *Break goal \"{goal_name}\"?*{refund_note}\n\n"
             f"This cannot be undone.",
             parse_mode="Markdown",
             reply_markup=reply_markup,
         )
     except Exception as e:
-        logger.error(f"goal_delete error: {e}", exc_info=True)
-        await update.message.reply_text("⚠️ Could not delete goal. Try again.")
+        logger.error(f"goal_break error: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Could not break goal. Try again.")
 
 
 async def goal_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Route /goal subcommands:
-      /goal            → show status
-      /goal set ...    → create goal
-      /goal add <amt>  → add savings
-      /goal delete     → remove goal
+      /goal              → show list of all goals
+      /goal list         → alias for show
+      /goal set ...      → create new goal
+      /goal view <name>  → view specific goal
+      /goal add <name> <amt> → add savings to goal
+      /goal break <name> → delete/break goal
     """
     user_id = str(update.effective_user.id)
     if not is_authenticated(user_id):
@@ -618,8 +771,12 @@ async def goal_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _goal_set(update, context)
     elif sub == "add":
         await _goal_add(update, context)
-    elif sub == "delete":
-        await _goal_delete(update, context)
+    elif sub == "view":
+        await _goal_view(update, context)
+    elif sub == "break":
+        await _goal_break(update, context)
+    elif sub == "list":
+        await _goal_list(update, context)
     else:
         await _goal_status(update, context)
 
