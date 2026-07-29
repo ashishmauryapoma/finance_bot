@@ -44,14 +44,8 @@ if not TOKEN:
 
 ptb_app: Application = Application.builder().token(TOKEN).build()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _ist_now() -> datetime:
     return datetime.now(tz=_IST)
-
 
 def _build_row(transaction: dict, username: str) -> dict:
     now = _ist_now()
@@ -79,16 +73,8 @@ def _format_saved(row: dict) -> str:
         f"{'─' * 28}"
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Bot Command Menu Registration
-# ─────────────────────────────────────────────────────────────────────────────
-
 async def register_commands(app: Application) -> None:
-    """
-    Register all bot commands with Telegram.
-    This makes them appear in the command menu when user types "/" or taps menu.
-    """
+    """Register bot commands with Telegram setMyCommands API."""
     commands = [
         BotCommand("start", "Start bot & login"),
         BotCommand("recent", "Show last 10 transactions"),
@@ -104,11 +90,6 @@ async def register_commands(app: Application) -> None:
         logger.info(f"✅ Registered {len(commands)} bot commands")
     except Exception as e:
         logger.error(f"Failed to register commands: {e}", exc_info=True)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Auth handlers
-# ─────────────────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -184,9 +165,7 @@ async def logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main message handler
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ─────────────────────────────────────────────────────────────────────────────async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id  = str(update.effective_user.id)
     username = (
         update.effective_user.username
@@ -205,7 +184,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_chat_action("typing")
 
     try:
-        # ── Step 1: Check if message is a goal deposit ────────────────────────
         active_goals = get_active_goals()
         if active_goals:
             goal_check = await detect_goal_deposit(text)
@@ -213,7 +191,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 amount = float(goal_check["amount"])
                 goal_hint = goal_check.get("goal_hint", "").strip().lower() if goal_check.get("goal_hint") else None
                 
-                # Try to match goal hint to a goal name
                 matched_goal = None
                 if goal_hint:
                     for goal in active_goals:
@@ -221,7 +198,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             matched_goal = goal
                             break
                 
-                # If multiple goals and no match, show selection buttons
                 if len(active_goals) > 1 and not matched_goal:
                     context.user_data["pending_goal_deposit"] = {
                         "amount": amount,
@@ -242,11 +218,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
                 
-                # Single goal or matched goal
                 target_goal = matched_goal or active_goals[0]
                 goal_name = target_goal["Name"]
                 
-                # Check for overpayment
                 saved_so_far = float(target_goal.get("Saved", 0))
                 target_amt   = float(target_goal.get("Target", 0))
                 remaining    = round(target_amt - saved_so_far, 2)
@@ -263,8 +237,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
                 
                 goal, just_completed = add_to_goal(goal_name, amount, username)
-                
-                if just_completed:
                     await update.message.reply_text(
                         f"🎯 *Goal deposit saved!* ₹{amount:,.2f} logged.\n\n"
                         f"{format_goal_complete(goal)}",
@@ -276,9 +248,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"{format_goal_card(goal)}",
                         parse_mode="Markdown",
                     )
-                return  # done — don't process as a normal transaction
+                return
 
-        # ── Step 2: Normal transaction parsing ────────────────────────────────
         transaction = await extract_transaction(text)
 
         if not transaction:
@@ -298,11 +269,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"handle_message error: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Something went wrong. Please try again.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Finance command handlers
-# ─────────────────────────────────────────────────────────────────────────────
 
 async def recent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -412,10 +378,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❓ Unknown command. Use /help.")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Goal command handlers — Multiple Goals Support
-# ─────────────────────────────────────────────────────────────────────────────
 
 async def _goal_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show all goals (active and completed) with detailed breakdown."""
