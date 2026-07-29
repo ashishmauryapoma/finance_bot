@@ -1,12 +1,12 @@
 services:
-  - type: web                    # Free tier — NOT the paid "worker" type
+  - type: web                   
     name: telegram-finance-bot
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn bot:flask_app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        sync: false              # Fill in Render dashboard
+        sync: false              
       - key: BOT_PASSWORD
         sync: false
       - key: GROQ_API_KEY
@@ -20,4 +20,4 @@ services:
       - key: GOOGLE_CREDENTIALS_PATH
         value: credentials.json
       - key: WEBHOOK_URL
-        sync: false              # Set to: https://<your-app-name>.onrender.com
+        sync: false             
