@@ -355,14 +355,6 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{'─' * 32}",
         ]
         
-        # Current month summary
-        lines.append(
-            f"📅 *This Month:*\n"
-            f"   📥 Income: ₹{data.get('month_income', 0):,.2f}\n"
-            f"   📤 Expenses: ₹{data.get('month_expense', 0):,.2f}\n"
-            f"   Net: ₹{data.get('month_net', 0):,.2f}"
-        )
-        
         # Active goals breakdown
         if active_goals:
             lines.append(f"\n✅ *Active Goals ({len(active_goals)}):*")
