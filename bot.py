@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 from flask import Flask, request, jsonify
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -78,6 +78,32 @@ def _format_saved(row: dict) -> str:
         f"📝 *Note:*      {row['note']}\n"
         f"{'─' * 28}"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bot Command Menu Registration
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def register_commands(app: Application) -> None:
+    """
+    Register all bot commands with Telegram.
+    This makes them appear in the command menu when user types "/" or taps menu.
+    """
+    commands = [
+        BotCommand("start", "Start bot & login"),
+        BotCommand("recent", "Show last 10 transactions"),
+        BotCommand("summary", "Monthly income/expense summary"),
+        BotCommand("balance", "View net balance & goals breakdown"),
+        BotCommand("goal", "Manage savings goals (set/add/view/break/list)"),
+        BotCommand("logout", "Log out from bot"),
+        BotCommand("help", "Show help & all available commands"),
+    ]
+    
+    try:
+        await app.bot.set_my_commands(commands)
+        logger.info(f"✅ Registered {len(commands)} bot commands")
+    except Exception as e:
+        logger.error(f"Failed to register commands: {e}", exc_info=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -819,6 +845,10 @@ _loop = asyncio.new_event_loop()
 asyncio.set_event_loop(_loop)
 _loop.run_until_complete(ptb_app.initialize())
 logger.info("PTB app initialised.")
+
+# Register bot commands with Telegram
+_loop.run_until_complete(register_commands(ptb_app))
+logger.info("Bot command menu registered.")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Flask app

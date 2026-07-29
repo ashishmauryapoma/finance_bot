@@ -1,0 +1,170 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                  TELEGRAM BOT COMMAND MENU FLOW                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+ 1. BOT STARTUP (bot.py)
+═══════════════════════════════════════════════════════════════════════════════
+
+    1. Load environment & create Application
+       ↓
+    2. Initialize event loop
+       ↓
+    3. ptb_app.initialize()
+       ↓
+    4. ✨ register_commands(ptb_app) ← NEW STEP
+       │
+       ├─→ Create list of BotCommand objects
+       │   ├─ BotCommand("start", "Start bot & login")
+       │   ├─ BotCommand("recent", "Show last 10 transactions")
+       │   ├─ BotCommand("summary", "Monthly income/expense summary")
+       │   ├─ BotCommand("balance", "View net balance & goals breakdown")
+       │   ├─ BotCommand("goal", "Manage savings goals (set/add/view/break/list)")
+       │   ├─ BotCommand("logout", "Log out from bot")
+       │   └─ BotCommand("help", "Show help & all available commands")
+       │
+       ├─→ Call app.bot.set_my_commands(commands)
+       │   │   (HTTP POST to Telegram API)
+       │   │
+       │   └─→ Telegram API Response: ✓ OK
+       │
+       └─→ Log success: "✅ Registered 7 bot commands"
+       ↓
+    5. Register message handlers (unchanged)
+       ↓
+    6. Start polling or webhook mode
+
+
+═══════════════════════════════════════════════════════════════════════════════
+ 2. USER INTERACTION (Telegram)
+═══════════════════════════════════════════════════════════════════════════════
+
+    User types "/"
+         ↓
+    Telegram displays command menu
+         ↓
+    Commands shown with descriptions:
+    
+    🤖 Bot's Command Menu:
+    ┌─────────────────────────────────┐
+    │ /start     Start bot & login    │
+    │ /recent    Show last 10...      │
+    │ /summary   Monthly income...    │
+    │ /balance   View net balance...  │
+    │ /goal      Manage savings...    │
+    │ /logout    Log out from bot     │
+    │ /help      Show help & all...   │
+    └─────────────────────────────────┘
+         ↓
+    User taps a command
+         ↓
+    Command sent to bot
+         ↓
+    Handler processes command (unchanged)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+ 3. CODE CHANGES
+═══════════════════════════════════════════════════════════════════════════════
+
+   FILE: bot.py
+   
+   Line 8 (Imports):
+   ─────────────────
+   from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+                                                                         └─ NEW
+   
+   Lines 85-108 (New Function):
+   ────────────────────────────
+   async def register_commands(app: Application) -> None:
+       commands = [
+           BotCommand("start", "Start bot & login"),
+           BotCommand("recent", "Show last 10 transactions"),
+           BotCommand("summary", "Monthly income/expense summary"),
+           BotCommand("balance", "View net balance & goals breakdown"),
+           BotCommand("goal", "Manage savings goals (set/add/view/break/list)"),
+           BotCommand("logout", "Log out from bot"),
+           BotCommand("help", "Show help & all available commands"),
+       ]
+       try:
+           await app.bot.set_my_commands(commands)
+           logger.info(f"✅ Registered {len(commands)} bot commands")
+       except Exception as e:
+           logger.error(f"Failed to register commands: {e}", exc_info=True)
+   
+   Lines 846-850 (Initialization):
+   ───────────────────────────────
+   _loop = asyncio.new_event_loop()
+   asyncio.set_event_loop(_loop)
+   _loop.run_until_complete(ptb_app.initialize())
+   logger.info("PTB app initialised.")
+   
+   # Register bot commands with Telegram
+   _loop.run_until_complete(register_commands(ptb_app))  ← NEW
+   logger.info("Bot command menu registered.")            ← NEW
+
+
+═══════════════════════════════════════════════════════════════════════════════
+ 4. TELEGRAM API CALL
+═══════════════════════════════════════════════════════════════════════════════
+
+   HTTP Request:
+   ─────────────
+   POST https://api.telegram.org/bot{TOKEN}/setMyCommands
+   
+   Request Body:
+   ─────────────
+   {
+     "commands": [
+       {"command": "start", "description": "Start bot & login"},
+       {"command": "recent", "description": "Show last 10 transactions"},
+       {"command": "summary", "description": "Monthly income/expense summary"},
+       {"command": "balance", "description": "View net balance & goals breakdown"},
+       {"command": "goal", "description": "Manage savings goals (set/add/view/break/list)"},
+       {"command": "logout", "description": "Log out from bot"},
+       {"command": "help", "description": "Show help & all available commands"}
+     ]
+   }
+   
+   Response:
+   ────────
+   {"ok": true}
+   
+   OR (on error):
+   {
+     "ok": false,
+     "error_code": 400,
+     "description": "Bad Request: ..."
+   }
+
+
+═══════════════════════════════════════════════════════════════════════════════
+ 5. ERROR HANDLING
+═══════════════════════════════════════════════════════════════════════════════
+
+   ✓ Network error → Logged, bot continues
+   ✓ API error     → Logged, bot continues
+   ✓ Invalid scope → Logged, bot continues
+   ✓ Timeout       → Logged, bot continues
+   
+   Bot always starts regardless of command registration success.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+ 6. RESULTS
+═══════════════════════════════════════════════════════════════════════════════
+
+   Log Output:
+   ───────────
+   PTB app initialised.
+   ✅ Registered 7 bot commands
+   Bot command menu registered.
+   
+   User Experience:
+   ────────────────
+   ✓ Users see "/" autocomplete with all commands
+   ✓ Users see command descriptions inline
+   ✓ Users can tap menu button to see commands
+   ✓ Works on desktop, mobile, and web Telegram
+   ✓ Commands cached by Telegram for fast access
+
