@@ -28,7 +28,6 @@ SCOPES = [
 
 HEADERS = ["Date", "Timestamp", "Type", "Category", "Amount", "Note", "User"]
 
-# ── Styling constants ─────────────────────────────────────────────────────────
 HEADER_BG        = {"red": 0.157, "green": 0.306, "blue": 0.612}   # deep blue
 HEADER_FG        = {"red": 1.0,   "green": 1.0,   "blue": 1.0}     # white
 ROW_ALT_BG       = {"red": 0.906, "green": 0.925, "blue": 0.969}   # light blue-gray
@@ -41,10 +40,6 @@ _spreadsheet = None
 _txn_sheet   = None
 _goal_sheet  = None
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Internal helpers
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _connect():
     global _client, _spreadsheet
@@ -136,10 +131,6 @@ def _freeze_request(sheet_id: int, rows: int = 1, cols: int = 0):
         }
     }
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Transactions sheet
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _get_txn_sheet():
     global _txn_sheet
@@ -296,8 +287,6 @@ def append_transaction(row: dict):
     new_row_idx = len(all_values)          # 1-based
     _style_new_row(ws, new_row_idx, row.get("type", "expense"))
 
-
-
     logger.info(f"Transaction appended: {values}")
 
 
@@ -419,7 +408,6 @@ def get_balance(user_id: str = None) -> dict:
         "top_category":   top_cat,
         "top_cat_amount": top_cat_amt,
     }
-
 
 
 
@@ -573,10 +561,6 @@ def _style_goal_data_rows(ws, start_row: int = 2, end_row: int = 3):
     
     ss.batch_update({"requests": requests})
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Public Goal API — Multiple Goals
-# ─────────────────────────────────────────────────────────────────────────────
 
 def get_all_goals_multi(status_filter: str = None) -> list[dict]:
     """
@@ -754,7 +738,6 @@ def add_to_goal(goal_name: str, amount: float, username: str = "goal") -> tuple[
     deposit   = round(min(amount, remaining), 2)
     new_saved = round(prev_saved + deposit, 2)
     
-    # ── 1. Find and update the goal row in the sheet ────────────────────────
     all_rows = ws.get_all_values()
     goal_row_idx = None
     
@@ -779,7 +762,6 @@ def add_to_goal(goal_name: str, amount: float, username: str = "goal") -> tuple[
     
     _goal_sheet = None  # invalidate cache
     
-    # ── 2. Log deposit as a transaction (Goal Saving) ────────────────────────
     now_ist = datetime.now(_IST)
     deposit_row = {
         "date":      now_ist.strftime("%d-%m-%Y"),

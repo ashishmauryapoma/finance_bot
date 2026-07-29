@@ -163,9 +163,8 @@ async def logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main message handler
-# ─────────────────────────────────────────────────────────────────────────────async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id  = str(update.effective_user.id)
     username = (
         update.effective_user.username
@@ -237,6 +236,7 @@ async def logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
                 
                 goal, just_completed = add_to_goal(goal_name, amount, username)
+                if just_completed:
                     await update.message.reply_text(
                         f"🎯 *Goal deposit saved!* ₹{amount:,.2f} logged.\n\n"
                         f"{format_goal_complete(goal)}",

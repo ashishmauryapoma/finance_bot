@@ -8,20 +8,12 @@ from datetime import datetime, timezone, timedelta
 _IST = timezone(timedelta(hours=5, minutes=30))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Progress bar
-# ─────────────────────────────────────────────────────────────────────────────
-
 def make_progress_bar(saved: float, target: float, length: int = 10) -> str:
     percent = min(saved / target, 1.0) if target > 0 else 0.0
     filled  = int(percent * length)
     bar     = "█" * filled + "░" * (length - filled)
     return f"[{bar}] {percent * 100:.1f}%"
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Internal helpers
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _days_left(deadline_str: str) -> int | None:
     """Return days remaining to deadline, or None if no deadline set."""
@@ -45,10 +37,6 @@ def _daily_needed(saved: float, target: float, deadline_str: str) -> str | None:
         return None
     return f"₹{remaining / days:,.0f}/day"
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Message formatters
-# ─────────────────────────────────────────────────────────────────────────────
 
 def format_goal_card(goal: dict) -> str:
     """Return a premium-styled progress card for the given goal dict."""
