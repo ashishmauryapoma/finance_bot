@@ -639,6 +639,38 @@ def validate_goal_uniqueness(name: str) -> bool:
     return get_goal_by_name_multi(name) is None
 
 
+def find_similar_goals(goal_name: str, max_suggestions: int = 3) -> list[dict]:
+    """
+    Find goals with names similar to the given name (case-insensitive substring match).
+    Returns list of matching goals sorted by similarity.
+    Used for suggesting goals when exact match is not found.
+    """
+    from difflib import SequenceMatcher
+    
+    goal_name_lower = goal_name.strip().lower()
+    all_goals = get_all_goals()
+    
+    # Filter goals that match the search criteria
+    matching = []
+    for goal in all_goals:
+        name_lower = goal.get("Name", "").strip().lower()
+        status = goal.get("Status", "").strip().lower()
+        
+        # Only suggest active and completed goals (not deleted)
+        if status == "deleted":
+            continue
+        
+        # Check if goal name contains search term or vice versa (substring match)
+        if goal_name_lower in name_lower or name_lower in goal_name_lower:
+            similarity = SequenceMatcher(None, goal_name_lower, name_lower).ratio()
+            matching.append((goal, similarity))
+    
+    # Sort by similarity (highest first)
+    matching.sort(key=lambda x: x[1], reverse=True)
+    
+    return [goal for goal, _ in matching[:max_suggestions]]
+
+
 def get_active_goals() -> list[dict]:
     """Get all active (non-completed, non-deleted) goals."""
     return get_all_goals(status_filter="active")

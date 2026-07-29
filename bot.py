@@ -21,7 +21,7 @@ from sheets_handler import (
     append_transaction, get_recent_transactions,
     get_summary, get_balance,
     get_all_goals, get_goal_by_name, get_active_goals, get_completed_goals,
-    create_goal, add_to_goal, break_goal,
+    create_goal, add_to_goal, break_goal, find_similar_goals,
 )
 from auth import verify_password, is_authenticated, set_authenticated
 from utils import format_summary, format_recent
@@ -685,8 +685,10 @@ async def _goal_button_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     # ── Goal break confirmation ────────────────────────────────────────────────
     elif data.startswith("goal_break:"):
-        goal_name = data.replace("goal_break:", "", 1)
-        action = data.split("|")[1] if "|" in data else ""
+        # Decode goal name (handle escaped characters)
+        parts = data.replace("goal_break:", "", 1).split("|")
+        goal_name = parts[0].replace("\\:", ":").replace("\\|", "|")
+        action = parts[1] if len(parts) > 1 else ""
         
         if action == "yes":
             username = (
@@ -702,19 +704,57 @@ async def _goal_button_callback(update: Update, context: ContextTypes.DEFAULT_TY
                     return
                 
                 saved = float(goal.get("Saved", 0))
-                break_goal(goal_name, username)
+                status = goal.get("Status", "").strip().lower()
+                
+                # Break the goal
+                success = break_goal(goal_name, username)
+                
+                if not success:
+                    await query.edit_message_text(
+                        f"⚠️ Could not delete goal '{goal_name}'. Try again.",
+                        parse_mode="Markdown",
+                    )
+                    return
+                
+                # Get updated stats
+                active_goals = get_active_goals()
+                completed_goals = get_completed_goals()
+                balance_data = get_balance(str(query.from_user.id))
+                net_balance = balance_data.get("net_balance", 0)
+                
+                # Build detailed summary
+                lines = [
+                    f"✅ *Goal Removed*",
+                    f"{'━' * 32}",
+                    f"🗑️  *{goal_name}* has been deleted.",
+                ]
                 
                 if saved > 0:
-                    await query.edit_message_text(
-                        f"🗑️ Goal *{goal_name}* deleted.\n\n"
-                        f"💰 ₹{saved:,.2f} refunded to your balance.",
-                        parse_mode="Markdown",
-                    )
+                    lines.append(f"💰 *Refunded:* ₹{saved:,.2f}")
+                
+                lines.extend([
+                    f"💳 *New Available Balance:* ₹{net_balance:,.2f}",
+                    f"{'━' * 32}",
+                ])
+                
+                # Show remaining goals summary
+                if active_goals or completed_goals:
+                    if active_goals:
+                        total_active_saved = sum(float(g.get("Saved", 0)) for g in active_goals)
+                        lines.append(f"✅ *Active Goals:* {len(active_goals)} (₹{total_active_saved:,.2f} saved)")
+                    
+                    if completed_goals:
+                        total_completed = sum(float(g.get("Saved", 0)) for g in completed_goals)
+                        lines.append(f"✨ *Locked Goals:* {len(completed_goals)} (₹{total_completed:,.2f} locked)")
                 else:
-                    await query.edit_message_text(
-                        f"🗑️ Goal *{goal_name}* deleted.",
-                        parse_mode="Markdown",
-                    )
+                    lines.append("📌 No goals remaining.")
+                
+                lines.append(f"{'━' * 32}")
+                
+                await query.edit_message_text(
+                    "\n".join(lines),
+                    parse_mode="Markdown",
+                )
             except Exception as e:
                 logger.error(f"goal_break callback error: {e}", exc_info=True)
                 await query.edit_message_text("⚠️ Could not delete goal. Try again.")
@@ -725,52 +765,125 @@ async def _goal_button_callback(update: Update, context: ContextTypes.DEFAULT_TY
             )
 
 
+def _find_similar_goals(goal_name: str, max_suggestions: int = 3) -> list[dict]:
+    """
+    Find goals with names similar to the given name (case-insensitive substring match).
+    Returns list of matching goals sorted by name similarity.
+    """
+    from difflib import SequenceMatcher
+    
+    goal_name_lower = goal_name.strip().lower()
+    all_goals = get_all_goals()
+    
+    # Filter goals that contain the search term or vice versa
+    matching = []
+    for goal in all_goals:
+        name_lower = goal.get("Name", "").strip().lower()
+        status = goal.get("Status", "").strip().lower()
+        
+        # Only suggest active and completed goals (not deleted)
+        if status == "deleted":
+            continue
+            
+        # Check if goal name contains search term or vice versa
+        if goal_name_lower in name_lower or name_lower in goal_name_lower:
+            matching.append((goal, SequenceMatcher(None, goal_name_lower, name_lower).ratio()))
+    
+    # Sort by similarity (highest first)
+    matching.sort(key=lambda x: x[1], reverse=True)
+    
+    return [goal for goal, _ in matching[:max_suggestions]]
+
+
 async def _goal_break(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /goal break <name>
-    Ask confirmation before breaking a goal.
+    Parse entire text after "/goal break" as goal name (preserving spaces).
+    Ask confirmation before breaking a goal (active or completed).
     """
     if len(context.args) < 2:
         await update.message.reply_text(
             "⚠️ *Usage:* `/goal break <goal_name>`\n"
-            "*Example:* `/goal break \"Goa Trip\"`",
+            "*Example:* `/goal break Car Loan`",
             parse_mode="Markdown",
         )
         return
 
-    goal_name = context.args[1]
+    # Parse entire text after "/goal break" to preserve spaces
+    goal_name = " ".join(context.args[1:]).strip()
+    
+    if not goal_name:
+        await update.message.reply_text(
+            "⚠️ Please provide a goal name.\n"
+            "*Example:* `/goal break Car Loan`",
+            parse_mode="Markdown",
+        )
+        return
     
     try:
+        # Try exact match (case-insensitive)
         goal = get_goal_by_name(goal_name)
-        if not goal:
-            await update.message.reply_text(
-                f"❌ Goal '{goal_name}' not found.\n\n"
-                f"Use `/goal list` to see all goals.",
-                parse_mode="Markdown",
-            )
-            return
+        
+        if goal:
+            status = goal.get("Status", "").strip().lower()
+            
+            # Allow breaking both active and completed goals
+            if status == "deleted":
+                await update.message.reply_text(
+                    f"❌ Goal '{goal_name}' is already deleted.",
+                    parse_mode="Markdown",
+                )
+                return
+            
+            saved = float(goal.get("Saved", 0))
+            
+            # Escape special characters in goal name for callback data
+            encoded_goal_name = goal_name.replace(":", "\\:").replace("|", "\\|")
 
-        saved = float(goal.get("Saved", 0))
-
-        keyboard = [
-            [
-                InlineKeyboardButton("✅ Yes, break it", callback_data=f"goal_break:{goal_name}|yes"),
-                InlineKeyboardButton("❌ No, keep it",    callback_data=f"goal_break:{goal_name}|no"),
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Yes, break it", callback_data=f"goal_break:{encoded_goal_name}|yes"),
+                    InlineKeyboardButton("❌ No, keep it",    callback_data=f"goal_break:{encoded_goal_name}|no"),
+                ]
             ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
-        refund_note = (
-            f"\n\n💰 ₹{saved:,.2f} will be *refunded* to your balance."
-            if saved > 0 else ""
-        )
+            refund_note = (
+                f"\n\n💰 ₹{saved:,.2f} will be *returned* to your available balance."
+                if saved > 0 else ""
+            )
+            
+            status_note = " (locked)" if status == "completed" else ""
 
-        await update.message.reply_text(
-            f"🗑️ *Break goal \"{goal_name}\"?*{refund_note}\n\n"
-            f"This cannot be undone.",
-            parse_mode="Markdown",
-            reply_markup=reply_markup,
-        )
+            await update.message.reply_text(
+                f"🗑️ *Break goal \"{goal_name}\"{status_note}?*{refund_note}\n\n"
+                f"This cannot be undone.",
+                parse_mode="Markdown",
+                reply_markup=reply_markup,
+            )
+        else:
+            # No exact match - suggest similar goals
+            similar = _find_similar_goals(goal_name)
+            
+            if similar:
+                suggestions = "\n".join([f"• {g.get('Name')}" for g in similar])
+                await update.message.reply_text(
+                    f"❌ Goal '{goal_name}' not found.\n\n"
+                    f"Did you mean?\n{suggestions}\n\n"
+                    f"Use `/goal list` to see all goals.",
+                    parse_mode="Markdown",
+                )
+            else:
+                all_goals = get_all_goals()
+                active_count = len([g for g in all_goals if g.get("Status", "").strip().lower() == "active"])
+                completed_count = len([g for g in all_goals if g.get("Status", "").strip().lower() == "completed"])
+                
+                await update.message.reply_text(
+                    f"❌ Goal '{goal_name}' not found.\n\n"
+                    f"📊 Available goals: {active_count} active, {completed_count} completed\n"
+                    f"Use `/goal list` to see all goals.",
+                    parse_mode="Markdown",
+                )
     except Exception as e:
         logger.error(f"goal_break error: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Could not break goal. Try again.")
