@@ -436,6 +436,12 @@ _GOAL_HDR_FG = {"red": 1.0,   "green": 1.0,   "blue": 1.0}
 _GOAL_ROW_BG = {"red": 0.965, "green": 0.941, "blue": 0.984}  # light lavender
 
 
+def clear_goal_cache():
+    """Explicitly clear the goal sheet cache to force reload from Google Sheets."""
+    global _goal_sheet
+    _goal_sheet = None
+
+
 def _get_goal_sheet():
     global _goal_sheet
     if _goal_sheet:
@@ -826,6 +832,8 @@ def break_goal(goal_name: str, username: str = "goal") -> bool:
     ws.update(f"F{goal_row_idx}", [["deleted"]], value_input_option="RAW")
     ws.update(f"G{goal_row_idx}", [[now_ist]], value_input_option="RAW")
     
+    # Force cache invalidation by setting global variable to None
+    global _goal_sheet
     _goal_sheet = None
     
     # If amount was saved, log it as refund income

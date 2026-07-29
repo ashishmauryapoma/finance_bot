@@ -21,7 +21,7 @@ from sheets_handler import (
     append_transaction, get_recent_transactions,
     get_summary, get_balance,
     get_all_goals, get_goal_by_name, get_active_goals, get_completed_goals,
-    create_goal, add_to_goal, break_goal, find_similar_goals,
+    create_goal, add_to_goal, break_goal, find_similar_goals, clear_goal_cache,
 )
 from auth import verify_password, is_authenticated, set_authenticated
 from utils import format_summary, format_recent
@@ -698,7 +698,7 @@ async def _goal_button_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 saved = float(goal.get("Saved", 0))
                 status = goal.get("Status", "").strip().lower()
                 
-                # Break the goal
+                # Break the goal (works for both active and completed)
                 success = break_goal(goal_name, username)
                 
                 if not success:
@@ -707,6 +707,9 @@ async def _goal_button_callback(update: Update, context: ContextTypes.DEFAULT_TY
                         parse_mode="Markdown",
                     )
                     return
+                
+                # Clear cache to force reload from Google Sheets
+                clear_goal_cache()
                 
                 # Get updated stats
                 active_goals = get_active_goals()
