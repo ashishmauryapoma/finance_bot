@@ -615,11 +615,16 @@ def get_all_goals(status_filter: str = None) -> list[dict]:
 def get_goal_by_name_multi(name: str) -> dict | None:
     """
     Get a specific goal by exact name (case-insensitive).
+    Excludes deleted goals from the search.
     Returns goal dict with all 7 columns if found, None otherwise.
     """
     goals = get_all_goals_multi()
     name_lower = name.strip().lower()
     for goal in goals:
+        status = goal.get("Status", "").strip().lower()
+        # Skip deleted goals
+        if status == "deleted":
+            continue
         if goal.get("Name", "").strip().lower() == name_lower:
             return goal
     return None

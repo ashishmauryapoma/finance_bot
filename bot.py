@@ -820,13 +820,6 @@ async def _goal_break(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status = goal.get("Status", "").strip().lower()
             
             # Allow breaking both active and completed goals
-            if status == "deleted":
-                await update.message.reply_text(
-                    f"❌ Goal '{goal_name}' is already deleted.",
-                    parse_mode="Markdown",
-                )
-                return
-            
             saved = float(goal.get("Saved", 0))
             
             # Escape special characters in goal name for callback data
